@@ -27,7 +27,7 @@ import numpy as np
 import logging
 import os
 
-from cfm_config import config
+from cfm_config import cfm_output_folder, config
 
 logging.basicConfig(level=logging.INFO)
 
@@ -40,7 +40,6 @@ if __name__ == "__main__":
         "Barnola1991",
         "Ligtenberg2011",
     ]
-    start, end = config["start_year"], config["end_year"]
     rcm_name = config["rcm_name"]
     melt_scheme = config["cfm_config"]["liquid"]
 
@@ -100,8 +99,7 @@ if __name__ == "__main__":
         # plt.plot(in_situ_density, in_situ_depth, label="In situ", color="k", linewidth=1)
         for physrho in physrho_values:
             # load simulation
-            # round coordinates to 5 dp, then drop trailing zeros for cleaner paths
-            output_path = f"{config['CFM_data_path']}/cfm_output/CFMoutput_{lat:.3f}_{lon:.3f}_{start}_{end}_{physrho}_{melt_scheme}_{rcm_name}/CFMresults.hdf5"
+            output_path = f"{cfm_output_folder(lat, lon, physrho, melt_scheme, rcm_name)}/CFMresults.hdf5"
             with xr.open_dataset(output_path, engine="h5netcdf", phony_dims="sort") as ds:
                 results_dict = {
                     "model_time_matrix": ds["density"][1:, 0],

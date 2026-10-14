@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
 
-from cfm_config import config
+from cfm_config import cfm_output_folder, config, format_coord
 
 logging.basicConfig(level=logging.INFO)
 
@@ -37,10 +37,9 @@ class ResultsPlotter:
 
         phys_rho_str = "_".join(self.phys_rho)
         self._output_paths: List[str] = [
-            f"{config['CFM_data_path']}/cfm_output/CFMoutput_{self.lat}_{self.lon}_{config['start_year']}_{config['end_year']}_{scheme}_{self.liquid}_{self.rcm_name}"
-            for scheme in self.phys_rho
+            cfm_output_folder(self.lat, self.lon, scheme, self.liquid, self.rcm_name) for scheme in self.phys_rho
         ]
-        self._figure_path: str = f"{config['CFM_data_path']}/cfm_figures/figures_{self.lat}_{self.lon}_{config['start_year']}_{config['end_year']}_{phys_rho_str}_{self.liquid}_{self.rcm_name}"
+        self._figure_path: str = f"{config['CFM_data_path']}/cfm_figures/figures_{format_coord(self.lat)}_{format_coord(self.lon)}_{config['start_year']}_{config['end_year']}_{phys_rho_str}_{self.liquid}_{self.rcm_name}"
         os.makedirs(self._figure_path, exist_ok=True)
 
         self._thickness_change_range: List[float] = config[

@@ -16,7 +16,7 @@ import xarray as xr
 import pandas as pd
 import matplotlib.pyplot as plt
 
-from cfm_config import config
+from cfm_config import cfm_output_folder, config
 
 
 def read_output_data(file_path):
@@ -71,7 +71,7 @@ if __name__ == "__main__":
 
         plt.figure(figsize=(10, 6))
         for phys_rho in phys_rho_options:
-            output_path = f"{config['CFM_data_path']}/cfm_output/CFMoutput_{lat:.3f}_{lon:.3f}_{start}_{end}_{phys_rho}_{liquid}_{rcm_name}/CFMresults.hdf5"
+            output_path = f"{cfm_output_folder(lat, lon, phys_rho, liquid, rcm_name)}/CFMresults.hdf5"
             results_dict = read_output_data(output_path)
 
             # Align lengths so time and DIP-derived series are paired safely.
