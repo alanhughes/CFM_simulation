@@ -9,6 +9,8 @@ description = "Community firn model simulation with forcing data processing and 
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    "dask",
+    "h5netcdf",
     "h5py",
     "matplotlib",
     "netCDF4",
