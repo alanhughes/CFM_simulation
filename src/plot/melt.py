@@ -1,11 +1,9 @@
 import matplotlib.pyplot as plt
 import xarray as xr
 import logging
-import yaml
 from typing import Dict, Tuple, Literal
 
-with open("config.yaml", "r") as f:
-    config = yaml.safe_load(f)
+from cfm_config import config
 
 logging.basicConfig(level=logging.INFO)
 

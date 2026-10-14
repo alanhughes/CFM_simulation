@@ -5,12 +5,10 @@ from typing import Dict, List, Literal
 import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
-import yaml
+
+from cfm_config import config
 
 logging.basicConfig(level=logging.INFO)
-
-with open("config.yaml", "r") as file:
-    config = yaml.safe_load(file)
 
 
 class ResultsPlotter:

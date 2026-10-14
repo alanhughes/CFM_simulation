@@ -4,12 +4,10 @@ from typing import List, Literal
 
 import matplotlib.pyplot as plt
 import xarray as xr
-import yaml
 
 from force import ProcessMAR, ProcessRACMO
 
-with open("config.yaml", "r") as f:
-    config = yaml.safe_load(f)
+from cfm_config import config
 
 
 class SpatialPlotter:

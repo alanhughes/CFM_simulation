@@ -11,14 +11,10 @@ Usage:
 import argparse
 import logging
 
-import yaml
-
+from cfm_config import config
 from plot.results import ResultsPlotter
 
 logging.basicConfig(level=logging.INFO)
-
-with open("config.yaml", "r") as file:
-    config = yaml.safe_load(file)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run CFM plotting with optional command line arguments")

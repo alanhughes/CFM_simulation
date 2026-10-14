@@ -18,12 +18,10 @@ import pandas as pd
 from typing import Dict, Tuple
 
 import logging
-import yaml
 
 logging.basicConfig(level=logging.INFO)
 
-with open("config.yaml", "r") as f:
-    config = yaml.safe_load(f)
+from cfm_config import config
 
 if __name__ == "__main__":
     borehole_sites: Dict[str, Tuple[float, float]] = config["borehole_sites"]

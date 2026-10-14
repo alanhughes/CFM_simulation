@@ -4,3 +4,5 @@ logs/
 *.code-workspace
 *.pyc
 .vscode/settings.json
+*.egg-info/
+config.yaml

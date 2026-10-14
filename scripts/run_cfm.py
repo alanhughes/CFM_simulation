@@ -14,14 +14,12 @@ Usage:
 
 from force.process import ProcessMAR, ProcessRACMO, ProcessRACMO23
 from sim.run import CFMRun
-import yaml
 import argparse
 import logging
 
 logging.basicConfig(level=logging.INFO)
 
-with open("config.yaml", "r") as file:
-    config = yaml.safe_load(file)
+from cfm_config import config
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run CFM simulation with optional command line arguments")

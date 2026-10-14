@@ -22,8 +22,13 @@ FAILED_RUNS=0
 
 # for logging individual runs
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-LOG_DIR="/home/speersm/luna/CPOM/speersm/CFM_simulation/logs"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+LOG_DIR="${REPO_ROOT}/logs"
 mkdir -p "$LOG_DIR"
+
+# python scripts open config.yaml relative to the working directory
+cd "$REPO_ROOT"
 
 # for summary logging
 exec > >(tee "$LOG_DIR/run_cfm_summary_${TIMESTAMP}.log") 2>&1
@@ -39,7 +44,7 @@ run_cfm_job() {
 
     echo "Running CFM for lat=$lat, lon=$lon, physrho=$physrho, rcm=$rcm (logging to $log_file)"
 
-    if python /home/speersm/luna/CPOM/speersm/CFM_simulation/scripts/run_cfm.py \
+    if python "${SCRIPT_DIR}/run_cfm.py" \
         --lat "$lat" \
         --lon "$lon" \
         --physrho "$physrho" \

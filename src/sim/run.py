@@ -5,11 +5,9 @@ import sys
 
 import numpy as np
 import pandas as pd
-import yaml
 from typing import Literal
 
-with open("config.yaml", "r") as file:
-    config = yaml.safe_load(file)
+from cfm_config import config
 
 logging.basicConfig(level=logging.INFO)
 

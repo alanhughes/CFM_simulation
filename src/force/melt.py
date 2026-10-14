@@ -3,14 +3,12 @@
 import logging
 
 import xarray as xr
-import yaml
 import os
 
+from cfm_config import config
 from .process import ProcessMAR, ProcessRACMO
 
 logging.basicConfig(level=logging.INFO)
-with open("config.yaml", "r") as f:
-    config = yaml.safe_load(f)
 
 
 class MeltMAR(ProcessMAR):

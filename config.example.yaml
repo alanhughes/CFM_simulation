@@ -3,12 +3,31 @@
 ### ----------------- Processing forcing data ----------------- ###
 
 ## Directories
-CFM_repo_path: /home/speersm/luna/CPOM/speersm/CommunityFirnModel/CFM_main # path to the Community Firn Model repository, should contain CFM_main folder
-MAR_data_path: /home/speersm/luna/CPOM/briggsk/RCM_data/Data/MAR/AIS/27.5km # path to MAR forcing data directory stored on luna
-RACMO_data_path: /home/speersm/luna/CPOM/archive/MODELS/RCM/RACMO/AIS/Feb_2026/ANT-12/ERA5/evaluation/day # path to RACMO forcing data directory stored on luna
-CFM_data_path: /home/speersm/luna/CPOM/speersm/CFM_data # path to store CFM input and output data
-force_data_save_path_pattern: "{CFM_data_path}/cfm_input/{rcm_name}_{borehole_lat}_{borehole_lon}_{start_year}_{end_year}.csv" # configurable forcing file naming pattern
-RACMO23_data_path: /home/speersm/luna/CPOM/archive/MODELS/RCM/RACMO/AIS/Mar_2026 # path to higher resolution RACMO 2.3 data directory stored on luna
+## Copy this file to config.yaml (which is gitignored) and edit the paths in this block for your machine:
+##   cp config.example.yaml config.yaml
+## Everything below this block is machine-independent and can usually be left as is.
+## Paths may reference {cpom_mount}, which is expanded by src/cfm_config.py.
+## Values starting with { must be quoted. Use absolute paths - ~ is not expanded.
+
+# Where luna's CPOM share is mounted on this machine. Mount it read-only (see README) - nothing is ever written here.
+cpom_mount: /path/to/mnt/cpom
+
+# Your checkout of https://github.com/UWGlaciology/CommunityFirnModel - point at its CFM_main folder, not the repo root.
+CFM_repo_path: /path/to/CommunityFirnModel/CFM_main
+
+# A LOCAL folder where all output goes (forcing CSVs, CFM results, figures). Must not be on the luna share.
+CFM_data_path: /path/to/CFM_data
+
+# Raw RCM NetCDF forcing data, read from the luna share. These defaults should work once cpom_mount is set.
+MAR_data_path: "{cpom_mount}/briggsk/RCM_data/Data/MAR/AIS/27.5km" # MAR forcing data
+RACMO_data_path: "{cpom_mount}/archive/MODELS/RCM/RACMO/AIS/Feb_2026/ANT-12/ERA5/evaluation/day" # RACMO forcing data
+RACMO23_data_path: "{cpom_mount}/archive/MODELS/RCM/RACMO/AIS/Mar_2026" # higher resolution RACMO 2.3 forcing data
+
+# In situ depth-density CSVs ({site}_depth-density.csv), used by scripts/plot_density_error.py
+in_situ_data_path: "{cpom_mount}/hughes54/CFM_data/in_situ"
+
+# Naming pattern for generated forcing files - usually no need to change
+force_data_save_path_pattern: "{CFM_data_path}/cfm_input/{rcm_name}_{borehole_lat}_{borehole_lon}_{start_year}_{end_year}.csv"
 
 # Period
 start_year: 1979
