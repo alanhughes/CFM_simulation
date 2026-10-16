@@ -53,13 +53,13 @@ def measure_cfm_identity(version: dict) -> dict:
 
 
 def check_cfm_identity(identity: dict) -> None:
-    """Refuse a CFM checkout with uncommitted code changes, unless its version sets allow_uncommitted."""
+    """Refuse a CFM checkout with uncommitted code changes."""
     repo, code = identity["repo"], identity["code_changes"]
     if code:
-        message = f"CFM checkout {repo} has uncommitted code changes: {', '.join(code)}."
-        if not identity["allow_uncommitted"]:
-            raise RuntimeError(f"{message} Commit them to a branch of the CFM checkout first.")
-        logging.warning(f"{message} Allowed, as version {identity['label']!r} sets allow_uncommitted.")
+        raise RuntimeError(
+            f"CFM checkout {repo} has uncommitted code changes: {', '.join(code)}. "
+            "Commit them to a branch of the CFM checkout first."
+        )
 
     other = [path for path in changed_paths("\n".join(identity["status"])) if path not in code]
     if other:
