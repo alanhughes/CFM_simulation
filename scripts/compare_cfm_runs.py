@@ -8,8 +8,15 @@ reports:
 
 Only reads the two folders, never writes. Does not need config.yaml.
 
+Matrix mode (FEAT-001): --baseline <label> --cfm <label> [<label> ...] finds the runs with find_runs (from the
+manifests, so it needs config.yaml) and compares each run of each --cfm version with the baseline run of the same model
+point, schemes and years. It prints one row for each pair: the identical datasets of each file, and the physical
+differences of the summary(). The filters --site, --model-point, --rcm, --physrho, --liquid limit the runs. If more
+than one run of a version agrees, it uses the run that finished last (as find_run).
+
 Usage:
     - python scripts/compare_cfm_runs.py <new_output_folder> <reference_output_folder>
+    - python scripts/compare_cfm_runs.py --baseline 3e3bf7e-speersm --cfm ab871c8 [--site CI-0] [--rcm RACMO] [--csv out.csv]
 """
 
 import argparse
@@ -65,6 +72,73 @@ def compare_exact(new_dir: str, ref_dir: str) -> None:
             print(f"  identical: {n_identical}/{len(common)}")
 
 
+def summary(new_dir: str, ref_dir: str) -> dict:
+    """The numbers of one comparison, for the matrix mode: identical datasets per file and the physical differences."""
+    row = {}
+    for file_name in CFM_FILES:
+        key = file_name.replace(".hdf5", "")
+        if not all(os.path.exists(f"{d}/{file_name}") for d in (new_dir, ref_dir)):
+            row[key] = "missing"
+            continue
+        with h5py.File(f"{new_dir}/{file_name}", "r") as new_file, h5py.File(f"{ref_dir}/{file_name}", "r") as ref_file:
+            new_sets, ref_sets = datasets(new_file), datasets(ref_file)
+            common = sorted(new_sets.keys() & ref_sets.keys())
+            identical = 0
+            for name in common:
+                new, ref = new_sets[name][()], ref_sets[name][()]
+                equal_nan = new.dtype.kind not in "SOU"
+                identical += new.shape == ref.shape and np.array_equal(new, ref, equal_nan=equal_nan)
+            row[key] = f"{identical}/{len(set(new_sets) | set(ref_sets))}"
+    row["bit_for_bit"] = all(
+        isinstance(value, str) and value != "missing" and value.split("/")[0] == value.split("/")[1]
+        for key, value in row.items()
+    )
+    if all(os.path.exists(f"{d}/CFMresults.hdf5") for d in (new_dir, ref_dir)):
+        with h5py.File(f"{new_dir}/CFMresults.hdf5", "r") as new, h5py.File(f"{ref_dir}/CFMresults.hdf5", "r") as ref:
+            if np.array_equal(new["depth"][()], ref["depth"][()]):
+                depth = new["depth"][1:]
+                rho_new, rho_ref = new["density"][-1, 1:], ref["density"][-1, 1:]
+                row["fac_final_diff_m"] = float(new["DIP"][-1, 1] - ref["DIP"][-1, 1])
+                row["density_final_mean_abs_diff"] = float(np.nanmean(np.abs(rho_new - rho_ref)))
+                for rho in COMPARE_DENSITIES:
+                    row[f"depth_{rho}_diff_m"] = float(depth[np.argmax(rho_new >= rho)] - depth[np.argmax(rho_ref >= rho)])
+                col = 1 + np.argmin(np.abs(depth - COMPARE_DEPTHS[-1]))
+                row[f"temp_{COMPARE_DEPTHS[-1]}m_mean_diff_K"] = float(
+                    np.nanmean(new["temperature"][1:, col] - ref["temperature"][1:, col])
+                )
+            else:
+                row["note"] = "depth grids differ"
+    return row
+
+
+def matrix(baseline: str, versions: list, filters: dict) -> list:
+    """Compare the runs of each version with the baseline runs of the same model point, schemes and years."""
+    from sim.runs import find_runs
+
+    def key(run):
+        return (run.model_point, run.physRho, run.liquid, run.start_year, run.end_year)
+
+    def latest(runs):
+        by_key = {}
+        for run in sorted(runs, key=lambda run: run.finished):
+            by_key[key(run)] = run  # the last to finish
+        return by_key
+
+    base = latest(find_runs(cfm=baseline, **filters))
+    rows = []
+    for version in versions:
+        other = latest(find_runs(cfm=version, **filters))
+        for k in sorted(base.keys() | other.keys()):
+            row = dict(zip(("model_point", "physRho", "liquid", "start_year", "end_year"), k), cfm=version)
+            if k not in other or k not in base:
+                row["note"] = f"no run of {version if k not in other else baseline}"
+            else:
+                row["run"], row["baseline_run"] = other[k].run_hash[:8], base[k].run_hash[:8]
+                row.update(summary(other[k].folder, base[k].folder))
+            rows.append(row)
+    return rows
+
+
 def compare_physical(new_dir: str, ref_dir: str) -> None:
     """Print differences in firn air content, density and temperature between two CFMresults.hdf5 files.
 
@@ -110,11 +184,39 @@ def compare_physical(new_dir: str, ref_dir: str) -> None:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Compare two CFM output folders")
-    parser.add_argument("new_dir", help="CFMoutput_* folder of the new run")
-    parser.add_argument("ref_dir", help="CFMoutput_* folder of the reference run")
+    parser = argparse.ArgumentParser(description="Compare two CFM output folders, or the runs of CFM versions")
+    parser.add_argument("new_dir", nargs="?", help="Output folder of the new run")
+    parser.add_argument("ref_dir", nargs="?", help="Output folder of the reference run")
+    parser.add_argument("--baseline", help="Matrix mode: the label of the baseline CFM version")
+    parser.add_argument("--cfm", nargs="+", help="Matrix mode: the labels of the CFM versions to compare")
+    parser.add_argument("--site")
+    parser.add_argument("--model-point")
+    parser.add_argument("--rcm")
+    parser.add_argument("--physrho")
+    parser.add_argument("--liquid")
+    parser.add_argument("--csv", help="Matrix mode: also write the table to this CSV file")
     args = parser.parse_args()
 
-    compare_exact(args.new_dir, args.ref_dir)
-    print()
-    compare_physical(args.new_dir, args.ref_dir)
+    if args.baseline:
+        if not args.cfm:
+            parser.error("--baseline needs --cfm")
+        import pandas as pd
+
+        filters = {
+            "site": args.site,
+            "model_point": args.model_point,
+            "rcm_name": args.rcm,
+            "physRho": args.physrho,
+            "liquid": args.liquid,
+        }
+        table = pd.DataFrame(matrix(args.baseline, args.cfm, filters))
+        with pd.option_context("display.max_rows", None, "display.width", 250, "display.float_format", "{:.3g}".format):
+            print(table.to_string(index=False))
+        if args.csv:
+            table.to_csv(args.csv, index=False)
+    else:
+        if not (args.new_dir and args.ref_dir):
+            parser.error("give two folders, or --baseline and --cfm")
+        compare_exact(args.new_dir, args.ref_dir)
+        print()
+        compare_physical(args.new_dir, args.ref_dir)
