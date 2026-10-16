@@ -8,7 +8,7 @@ import sys
 
 import pytest
 
-from cfm_config import cfm_version, config
+from cfm_config import ConfigError, cfm_version, config
 import sim.identity
 from sim.identity import changed_paths, check_cfm_identity, check_wrapper_identity, measure_cfm_identity, wrapper_identity
 from sim.run import import_cfm
@@ -31,9 +31,8 @@ def cfm_repo(tmp_path):
     return repo
 
 
-def identity(repo, allow_uncommitted=False):
-    version = {"label": "v", "repo": str(repo), "python": sys.executable, "allow_uncommitted": allow_uncommitted}
-    return measure_cfm_identity(version)
+def identity(repo):
+    return measure_cfm_identity({"label": "v", "repo": str(repo), "python": sys.executable})
 
 
 def test_clean_checkout_passes(cfm_repo):
@@ -57,13 +56,6 @@ def test_untracked_code_is_refused(cfm_repo):
     (cfm_repo / "new.py").write_text("")
     with pytest.raises(RuntimeError, match="new.py"):
         check_cfm_identity(identity(cfm_repo))
-
-
-def test_allow_uncommitted_only_warns(cfm_repo, caplog):
-    (cfm_repo / "melt.py").write_text("x = 2\n")
-    result = identity(cfm_repo, allow_uncommitted=True)
-    check_cfm_identity(result)
-    assert "allow_uncommitted" in caplog.text
 
 
 def test_diff_hash_changes_with_the_patch(cfm_repo):
@@ -96,8 +88,9 @@ def test_cfm_version_lookup(monkeypatch):
     }
     monkeypatch.setitem(config, "cfm_versions", versions)
     monkeypatch.setitem(config, "default_cfm_version", "a")
-    assert cfm_version() == {"label": "a", "repo": "/a", "python": "/a/python", "allow_uncommitted": False}
-    assert cfm_version("b")["allow_uncommitted"] is True
+    assert cfm_version() == {"label": "a", "repo": "/a", "python": "/a/python"}
+    with pytest.raises(ConfigError, match="allow_uncommitted was removed"):
+        cfm_version("b")
     with pytest.raises(ValueError, match="Unknown CFM version 'c'"):
         cfm_version("c")
 
@@ -107,7 +100,7 @@ def test_cfm_version_from_old_config(monkeypatch):
     monkeypatch.setitem(config, "CFM_repo_path", "/old/CFM_main")
     with pytest.warns(UserWarning, match="no cfm_versions"):
         version = cfm_version()
-    assert version == {"label": "default", "repo": "/old/CFM_main", "python": sys.executable, "allow_uncommitted": False}
+    assert version == {"label": "default", "repo": "/old/CFM_main", "python": sys.executable}
 
 
 def test_second_cfm_in_one_process_is_refused(tmp_path, monkeypatch):

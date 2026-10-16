@@ -20,7 +20,7 @@ from sim.manifest import COMPLETE, FAILED, RUNNING, read_manifest, write_manifes
 from sim.run import CFMRun
 
 SITE = (-66.403, -63.376, "GSFC2020", "RACMO", "bucket")
-VERSION = {"label": "test", "repo": "/nowhere/CFM_main", "python": sys.executable, "allow_uncommitted": False}
+VERSION = {"label": "test", "repo": "/nowhere/CFM_main", "python": sys.executable}
 MODEL_POINT = ModelPoint("RACMO", "ANT-12_release", 261, 126, -66.4, -63.4, 1.2)
 CFM_IDENTITY = {"commit": "abc", "status": [], "code_diff_sha256": "d", "python_version": "3", "pip_freeze": ["a==1"]}
 

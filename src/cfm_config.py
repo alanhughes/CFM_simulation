@@ -154,9 +154,9 @@ def cfm_version(label: str | None = None) -> dict:
     if label not in versions:
         raise ValueError(f"Unknown CFM version {label!r}. cfm_versions in config.yaml has: {', '.join(versions)}.")
     version = versions[label]
-    return {
-        "label": label,
-        "repo": version["repo"],
-        "python": version["python"],
-        "allow_uncommitted": version.get("allow_uncommitted", False),
-    }
+    if "allow_uncommitted" in version:
+        raise ConfigError(
+            f"cfm_versions.{label}.allow_uncommitted was removed. Commit local patches to a branch of the CFM "
+            "checkout, and delete the key from config.yaml."
+        )
+    return {"label": label, "repo": version["repo"], "python": version["python"]}
