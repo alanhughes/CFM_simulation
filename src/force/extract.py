@@ -1,13 +1,14 @@
-"""Fast extraction of RACMO daily forcing at many grid cells in one pass (FEAT-003).
+"""Fast extraction of RACMO and MAR daily forcing at many grid cells in one pass (FEAT-003).
 
-The RACMO files store each day as one compressed HDF5 chunk of the full map, so reading one cell costs as much as
-reading the whole file. This module therefore reads each (variable, file) pair once with h5py, in parallel worker
+The RACMO and MAR files store each day as one compressed HDF5 chunk of the full map, so reading one cell costs as much
+as reading the whole file. This module therefore reads each (variable, file) pair once with h5py, in parallel worker
 processes, and keeps every requested cell from it. Extra cells cost no extra reads from the share.
 
 h5py does not decode the data as xarray does, so this module does it itself: CF time units and calendar, _FillValue
 and missing_value (to NaN), scale_factor and add_offset. The derived columns (rain and albedo), the unit factors and
-the column maps follow ProcessRACMO._xr_to_input_dataframe (src/force/process.py) step by step, so the output agrees
-with the old CSVs.
+the column maps follow the old xarray code (ProcessRACMO._xr_to_input_dataframe and ProcessMAR._xr_to_input_dataframe)
+step by step, so the output agrees with the old CSVs. MAR variables have extra axes (SECTOR, OUTLAY, a height level)
+inside each chunk; the worker keeps one index on each, by coordinate value (DatasetSpec.level_keys, fixed_levels).
 
 A local cache (cache.h5, next to the forcing CSVs of FEAT-002) keeps all cells in a box around the sites, so a new site
 near the others needs no new pass over the share. See ensure_cache(). process_fast() writes the forcing CSV of each
@@ -49,14 +50,25 @@ TIME_BLOCK = 64  # time steps read in one h5py call; 64 full ANT-12 maps are app
 
 @dataclass(frozen=True)
 class DatasetSpec:
-    """How the files of one RACMO dataset are named and which variable is the snowfall."""
+    """How the files of one dataset are named, the names of its coordinates, and its unit changes."""
 
     rcm_name: str
     data_path_key: str
     column_map_key: str
-    file_glob: str  # "{var}" is replaced by the variable name
+    file_glob: str  # "{var}" is replaced by the variable name; without it, every variable is in every file
     year_regex: str  # groups: first year and, if present, last year in the file name
-    snowfall: str
+    snowfall: Optional[str]  # the snowfall variable for the derived rain (RACMO only)
+    time_name: str = "time"  # also the index name of the output DataFrame, as in the old CSVs
+    lat_name: str = "lat"
+    lon_name: str = "lon"
+    # config key of the unit factors (None: no key) and the factors if the key is not set
+    unit_factors_key: Optional[str] = "RACMO_to_CFM_unit_factors"
+    default_unit_factors: Mapping = field(default_factory=lambda: dict(DEFAULT_UNIT_FACTORS))
+    unit_offsets: Mapping = field(default_factory=dict)  # CFM column -> value added after the unit factors
+    # Axes between time and (y, x) with more than one value: keep the index whose coordinate value is the config value
+    # (level_keys, axis -> config key) or the fixed value (fixed_levels). An axis of size 1 needs no entry.
+    level_keys: Mapping = field(default_factory=dict)
+    fixed_levels: Mapping = field(default_factory=dict)
 
 
 DATASETS: Dict[str, DatasetSpec] = {
@@ -67,6 +79,24 @@ DATASETS: Dict[str, DatasetSpec] = {
     # XPEN055, e.g. tas.KNMI-1979.XPEN055.RACMO2.4p1_v5_historical.DD.nc
     "RACMO23": DatasetSpec(
         "RACMO23", "RACMO23_data_path", "RACMO23_to_CFM_column_map", "{var}.KNMI-*.nc", r"\.KNMI-(\d{4})\.", "sf"
+    ),
+    # MAR 27.5 km, e.g. MARv3.14.3-27.5km-daily-ERA5-1979.nc: one file per year with all the variables. The old code
+    # (ProcessMAR) kept SECTOR = config sector and OUTLAY = 0.0 (surface layer), and changed degC to K.
+    "MAR": DatasetSpec(
+        "MAR",
+        "MAR_data_path",
+        "MAR_to_CFM_column_map",
+        "*-[0-9][0-9][0-9][0-9].nc",
+        r"-(\d{4})\.nc$",
+        None,
+        time_name="TIME",
+        lat_name="LAT",
+        lon_name="LON",
+        unit_factors_key=None,
+        default_unit_factors={},
+        unit_offsets={"T2m": 273.15, "TSKIN": 273.15},
+        level_keys={"SECTOR": "sector"},
+        fixed_levels={"OUTLAY": 0.0},
     ),
 }
 
@@ -88,6 +118,8 @@ class ExtractSettings:
     unit_factors: Dict[str, Union[float, List[float]]] = field(default_factory=lambda: dict(DEFAULT_UNIT_FACTORS))
     processes: int = DEFAULT_PROCESSES
     time_block: int = TIME_BLOCK
+    unit_offsets: Dict[str, float] = field(default_factory=dict)  # CFM column -> value added after the factors
+    levels: Dict[str, float] = field(default_factory=dict)  # axis name -> coordinate value to keep
 
     @property
     def spec(self) -> DatasetSpec:
@@ -112,14 +144,17 @@ class ExtractSettings:
         if dataset not in DATASETS:
             raise ValueError(f"Fast extraction supports {list(DATASETS)}, not {dataset!r}")
         spec = DATASETS[dataset]
+        unit_factors = cfg.get(spec.unit_factors_key) if spec.unit_factors_key else None
         values = dict(
             dataset=dataset,
             data_path=cfg[spec.data_path_key],
             column_map=dict(cfg[spec.column_map_key]),
             start_year=int(cfg["start_year"]),
             end_year=int(cfg["end_year"]),
-            unit_factors=dict(cfg.get("RACMO_to_CFM_unit_factors") or DEFAULT_UNIT_FACTORS),
+            unit_factors=dict(unit_factors or spec.default_unit_factors),
             processes=int(cfg.get("forcing_processes") or DEFAULT_PROCESSES),
+            unit_offsets=dict(spec.unit_offsets),
+            levels={**spec.fixed_levels, **{axis: float(cfg[key]) for axis, key in spec.level_keys.items()}},
         )
         values.update(overrides)
         return cls(**values)
@@ -263,10 +298,10 @@ def check_file_years(settings: ExtractSettings, files: Mapping[str, Sequence[str
         check_date_coverage(dates, settings.start_year, settings.end_year, f"{settings.dataset} {var}")
 
 
-def read_grid(path: str) -> Tuple[np.ndarray, np.ndarray]:
-    """2D latitude and longitude (rlat, rlon) of a RACMO file."""
+def read_grid(path: str, spec: DatasetSpec) -> Tuple[np.ndarray, np.ndarray]:
+    """2D latitude and longitude (y, x) of a file of the dataset."""
     with h5py.File(path, "r") as h5:
-        return h5["lat"][:], h5["lon"][:]
+        return h5[spec.lat_name][:], h5[spec.lon_name][:]
 
 
 # ----------------------------------------------------------------------------------------------------------------
@@ -274,30 +309,56 @@ def read_grid(path: str) -> Tuple[np.ndarray, np.ndarray]:
 # ----------------------------------------------------------------------------------------------------------------
 
 
-def _read_file(job) -> Tuple[str, str, pd.DatetimeIndex, np.ndarray]:
-    """Worker: read one variable from one file at the given cells. Returns decoded times and (time, cell) values."""
-    path, var, rows, cols, block = job
+def _axis_name(dataset: h5py.Dataset, axis: int) -> Optional[str]:
+    """The netCDF dimension name of an axis, from its HDF5 dimension scale, or None if it has no scale."""
+    try:
+        return dataset.dims[axis][0].name.rsplit("/", 1)[-1]
+    except (IndexError, RuntimeError):
+        return None
+
+
+def _level_index(h5: h5py.File, dataset: h5py.Dataset, axis: int, levels: Mapping[str, float]) -> int:
+    """The index to keep on an axis between time and (y, x): the given coordinate value, or 0 if the axis has size 1."""
+    name = _axis_name(dataset, axis)
+    if name in levels:
+        found = np.flatnonzero(h5[name][:] == levels[name])
+        if len(found) != 1:
+            raise ValueError(f"{h5.filename}:{dataset.name} has no single {name} = {levels[name]}")
+        return int(found[0])
+    if dataset.shape[axis] == 1:
+        return 0
+    raise ValueError(
+        f"{h5.filename}:{dataset.name} has {dataset.shape[axis]} values on axis {name or axis}; "
+        f"give the value to keep in DatasetSpec.level_keys or fixed_levels"
+    )
+
+
+def _read_file(job) -> Tuple[str, str, pd.DatetimeIndex, np.ndarray, int]:
+    """Worker: read one variable from one file at the given cells.
+
+    Returns the decoded times, the (time, cell) values and the stored (compressed) bytes of the variable.
+    """
+    path, var, rows, cols, block, time_name, levels = job
     with h5py.File(path, "r") as h5:
         dataset = h5[var]
-        if dataset.ndim == 4 and dataset.shape[1] != 1:
-            raise ValueError(f"{path}:{var} has {dataset.shape[1]} levels; only one level is supported")
-        if dataset.ndim not in (3, 4):
-            raise ValueError(f"{path}:{var} has shape {dataset.shape}; expected (time, [level,] y, x)")
+        if dataset.ndim < 3:
+            raise ValueError(f"{path}:{var} has shape {dataset.shape}; expected (time, [levels,] y, x)")
+        index = tuple(_level_index(h5, dataset, axis, levels) for axis in range(1, dataset.ndim - 2))
         y0, y1 = int(rows.min()), int(rows.max()) + 1
         x0, x1 = int(cols.min()), int(cols.max()) + 1
         n_time = dataset.shape[0]
         out = np.empty((n_time, len(rows)), dtype=dataset.dtype)
         for start in range(0, n_time, block):
-            # every chunk is one full map, so this decompresses each chunk exactly once
-            data = dataset[start : start + block, ..., y0:y1, x0:x1]
-            data = data.reshape(data.shape[0], y1 - y0, x1 - x0)
+            # every chunk is one full map (with all its levels), so this decompresses each chunk exactly once
+            data = dataset[(slice(start, start + block), *index, slice(y0, y1), slice(x0, x1))]
             out[start : start + block] = data[:, rows - y0, cols - x0]
         values = decode_values(out, dataset.attrs)
-        time_var = h5["time"]
+        n_bytes = dataset.id.get_storage_size()
+        time_var = h5[time_name]
         times = decode_time(
             time_var[:], _attr_str(time_var.attrs, "units"), _attr_str(time_var.attrs, "calendar", "standard")
         )
-    return path, var, times, values
+    return path, var, times, values, n_bytes
 
 
 def _map_jobs(jobs: Sequence, processes: int) -> Iterable:
@@ -330,16 +391,23 @@ def read_raw(
         files = list_files(settings)
     rows = np.array([c[0] for c in cells], dtype=np.intp)
     cols = np.array([c[1] for c in cells], dtype=np.intp)
-    jobs = [(path, var, rows, cols, settings.time_block) for var, paths in files.items() for path in paths]
-    n_bytes = sum(os.path.getsize(job[0]) for job in jobs)
+    time_name = settings.spec.time_name
+    jobs = [
+        (path, var, rows, cols, settings.time_block, time_name, settings.levels)
+        for var, paths in files.items()
+        for path in paths
+    ]
+    n_files = len({job[0] for job in jobs})
     logging.info(
-        f"Reading {len(jobs)} {settings.dataset} files ({n_bytes / 1e9:.1f} GB) for {len(cells)} cells "
+        f"Reading {len(jobs)} {settings.dataset} variables from {n_files} files for {len(cells)} cells "
         f"with {settings.processes} processes..."
     )
     start = time.perf_counter()
+    n_bytes = 0
     parts: Dict[str, List[Tuple[pd.DatetimeIndex, np.ndarray]]] = {var: [] for var in files}
-    for done, (_, var, times, values) in enumerate(_map_jobs(jobs, settings.processes), 1):
+    for done, (_, var, times, values, var_bytes) in enumerate(_map_jobs(jobs, settings.processes), 1):
         parts[var].append((times, values))
+        n_bytes += var_bytes
         if done % 25 == 0 or done == len(jobs):
             elapsed = time.perf_counter() - start
             logging.info(f"...{done}/{len(jobs)} files read, {elapsed:.0f} s")
@@ -368,13 +436,14 @@ def derive_columns(raw: Mapping[str, np.ndarray], settings: ExtractSettings) -> 
 
     The steps and their order are the same as in ProcessRACMO._xr_to_input_dataframe:
     clip pr, snowfall and mltgl to >= 0; rf = pr - snowfall; alb = rsusgl / rsds; rename with the column map;
-    multiply by the unit factors; clip RAIN to >= 0.
+    multiply by the unit factors; clip the rain column (from rf) to >= 0. Then add the unit offsets, as
+    ProcessMAR._xr_to_input_dataframe did (+273.15 for the MAR temperatures). MAR has no derived columns or factors.
     """
     snowfall = settings.spec.snowfall
     source = dict(raw)
     for name in CLIP_SOURCE:
         name = snowfall if name == "snowfall" else name
-        if name in source:
+        if name is not None and name in source:
             source[name] = np.clip(source[name], a_min=0, a_max=None)
     with np.errstate(divide="ignore", invalid="ignore"):
         for derived, inputs in DERIVED.items():
@@ -387,8 +456,12 @@ def derive_columns(raw: Mapping[str, np.ndarray], settings: ExtractSettings) -> 
         if cfm in columns:
             for factor in np.atleast_1d(factors).tolist():
                 columns[cfm] = columns[cfm] * factor  # a Python number keeps the float32 dtype (NEP 50)
-    if "RAIN" in columns:
-        columns["RAIN"] = np.clip(columns["RAIN"], a_min=0, a_max=None)
+    rain = settings.column_map.get("rf")
+    if rain in columns:
+        columns[rain] = np.clip(columns[rain], a_min=0, a_max=None)
+    for cfm, offset in settings.unit_offsets.items():
+        if cfm in columns:
+            columns[cfm] = columns[cfm] + offset  # a Python number keeps the float32 dtype (NEP 50)
     return columns
 
 
@@ -405,7 +478,7 @@ def _extract(
     times, raw = read_raw(settings, unique_cells, files)
     columns = derive_columns(raw, settings)
     keep = time_selection(times, settings.start_year, settings.end_year)
-    times = times[keep]
+    times = times[keep].rename(settings.spec.time_name)
     columns = {cfm: values[keep] for cfm, values in columns.items()}
     return {
         cell: pd.DataFrame({cfm: values[:, k] for cfm, values in columns.items()}, index=times)
@@ -421,10 +494,10 @@ def _extract(
 def extract_points(
     dataset: str, cells: Sequence[Cell], settings: Optional[ExtractSettings] = None, **overrides
 ) -> Dict[Cell, pd.DataFrame]:
-    """Forcing DataFrames (CFM columns, daily time index) for grid cells, from one pass over the RACMO files.
+    """Forcing DataFrames (CFM columns, daily time index) for grid cells, from one pass over the RCM files.
 
     Args:
-        dataset: "RACMO" (ANT-12) or "RACMO23" (XPEN055).
+        dataset: "RACMO" (ANT-12), "RACMO23" (XPEN055) or "MAR".
         cells: (y, x) grid indices, (rlat, rlon). Duplicates are read once.
         settings: optional settings; by default they come from config.yaml, with overrides as keyword arguments
             (e.g. processes=4, data_path=...).
@@ -512,8 +585,11 @@ def union_box(a: Box, b: Box) -> Box:
 
 
 def _identity(settings: ExtractSettings) -> dict:
-    """The settings that the cached values depend on. A change in any of them makes the cache stale."""
-    return {
+    """The settings that the cached values depend on. A change in any of them makes the cache stale.
+
+    unit_offsets and levels are only in the identity if they are set (MAR), so the RACMO caches stay valid.
+    """
+    identity = {
         "version": CACHE_VERSION,
         "dataset": settings.dataset,
         "data_path": os.path.abspath(settings.data_path),
@@ -522,6 +598,10 @@ def _identity(settings: ExtractSettings) -> dict:
         "start_year": settings.start_year,
         "end_year": settings.end_year,
     }
+    for key in ("unit_offsets", "levels"):
+        if getattr(settings, key):
+            identity[key] = getattr(settings, key)
+    return identity
 
 
 def read_cache_meta(path: str) -> Optional[dict]:
@@ -575,7 +655,7 @@ def build_cache(
     del raw
     keep = time_selection(times, settings.start_year, settings.end_year)
     times = times[keep]
-    lat2d, lon2d = read_grid(next(iter(files.values()))[0])
+    lat2d, lon2d = read_grid(next(iter(files.values()))[0], settings.spec)
 
     meta = dict(
         _identity(settings),
@@ -615,7 +695,8 @@ def read_cache_points(path: str, cells: Sequence[Cell]) -> Dict[Cell, pd.DataFra
         y0, y1, x0, x1 = meta["box"]
         if not box_contains((y0, y1, x0, x1), cells):
             raise ValueError(f"Cells {cells} are not all inside the cache box {meta['box']}")
-        times = pd.DatetimeIndex(h5["time"][:].astype("datetime64[ns]"), name="time")
+        time_name = DATASETS[meta["dataset"]].time_name  # the index name of the old CSVs
+        times = pd.DatetimeIndex(h5["time"][:].astype("datetime64[ns]"), name=time_name)
         order = json.loads(_attr_str(h5["columns"].attrs, "order"))
         frames = {}
         for y, x in dict.fromkeys((int(y), int(x)) for y, x in cells):
@@ -647,7 +728,7 @@ def ensure_cache(
     if reason is None:
         reason = "a cell is outside the cache box"
     if grid is None:
-        grid = read_grid(next(iter(files.values()))[0])
+        grid = read_grid(next(iter(files.values()))[0], settings.spec)
     box = box_for_sites(grid[0], grid[1], sites, margin, cells)
     if (
         meta is not None
@@ -676,7 +757,7 @@ def forcing_for_cells(
     """Forcing DataFrames for grid cells (i, j), from one pass over the share or from the cache.
 
     Args:
-        dataset: "RACMO" or "RACMO23".
+        dataset: "RACMO", "RACMO23" or "MAR".
         cells: (i, j) grid indices, for example from force.model_point.
         use_cache: use cache.h5; default from the forcing_cache key (true if not set).
         cache_sites: (lat, lon) points for the cache box, for example all the sites, so later sites near them need no
@@ -703,7 +784,8 @@ def forcing_for_cells(
         frames = read_cache_points(path, cells)
     else:
         frames = _extract(settings, cells, files)
-    return frames, [path for paths in files.values() for path in paths]
+    # MAR has all the variables in each file, so a file can occur for more than one variable
+    return frames, list(dict.fromkeys(path for paths in files.values() for path in paths))
 
 
 def process_fast(
@@ -713,7 +795,8 @@ def process_fast(
     cache_sites: Optional[Sequence[Tuple[float, float]]] = None,
     **overrides,
 ) -> List[str]:
-    """Write the forcing CSV and JSON of each ProcessRACMO/ProcessRACMO23 in one pass. Returns the CSVs written.
+    """Write the forcing CSV and JSON of each ProcessRACMO/ProcessRACMO23/ProcessMAR in one pass. Returns the CSVs
+    written.
 
     Existing CSVs are checked and skipped, as in ProcessBase.process, unless overwrite is true. Processors that share
     a model point share one CSV. The cache box contains cache_sites (default: all active sites in sites.yaml) and the
@@ -742,7 +825,7 @@ def process_fast(
 
     settings = ExtractSettings.from_config(dataset, **overrides)
     files = list_files(settings)
-    lat2d, lon2d = read_grid(next(iter(files.values()))[0])
+    lat2d, lon2d = read_grid(next(iter(files.values()))[0], settings.spec)
     for processor in todo:
         mp = processor.model_point
         logging.info(
@@ -763,6 +846,10 @@ def process_fast(
         "extraction_cache": cache_path(dataset) if use_cache else None,
         "unit_factors_applied": settings.unit_factors,
     }
+    if settings.unit_offsets:
+        extra["unit_offsets_applied"] = settings.unit_offsets
+    if settings.levels:
+        extra["levels"] = settings.levels
     written = []
     for processor, cell in zip(todo, cells):
         processor.save_forcing(processor._save_path, frames[cell], source_files, extra=extra)

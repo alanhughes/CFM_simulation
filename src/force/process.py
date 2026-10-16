@@ -188,14 +188,15 @@ class ProcessMAR(ProcessBase):
         self._unit_factors = {"TSKIN": "+273.15 (degC to K)", "T2m": "+273.15 (degC to K)"}
 
     def process(self) -> None:
-        """
-        Process the MAR dataset to extract data at the borehole location.
+        """Write the forcing CSV and JSON file of the borehole location, with the h5py extraction (FEAT-003).
 
-        Returns:
-            xr.Dataset: MAR data at the borehole location.
+        The extraction reads the MAR files in one parallel pass, through the local cache around the sites. It stops
+        with ForcingCoverageError if the files do not include all the years from start_year to end_year (BUG-003).
         """
 
-        super().process(self._save_path)
+        from .extract import process_fast
+
+        process_fast([self])
 
     def _read_data(self) -> List[xr.Dataset]:
         """
