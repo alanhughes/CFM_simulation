@@ -28,6 +28,7 @@ import logging
 import os
 
 from cfm_config import cfm_output_folder, config, sites
+from force.model_point import model_point_label, shared_model_points
 
 logging.basicConfig(level=logging.INFO)
 
@@ -42,6 +43,9 @@ if __name__ == "__main__":
     ]
     rcm_name = config["rcm_name"]
     melt_scheme = config["cfm_config"]["liquid"]
+
+    # model point of each site; also the inactive sites, to show all the sites that share a grid cell (FEAT-002)
+    model_points = shared_model_points(sites(active_only=False), rcm_name)
 
     save_dir = f"{config['CFM_data_path']}/cfm_figures/errors"
     os.makedirs(save_dir, exist_ok=True)
@@ -118,7 +122,7 @@ if __name__ == "__main__":
         plt.gca().invert_yaxis()
         plt.xlabel("Density (kg/m³)")
         plt.ylabel("Depth (m)")
-        plt.title(f"Density vs Depth for {site}")
+        plt.title(f"Density vs Depth for {site}\n{model_point_label(site, model_points)}", fontsize=9)
         plt.legend()
         plt.grid()
         plt.savefig(f"{save_dir}/{site}_{melt_scheme}_{rcm_name}.png")

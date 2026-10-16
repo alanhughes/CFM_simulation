@@ -16,7 +16,7 @@ import matplotlib.pyplot as plt
 
 from cfm_config import cfm_output_folder, config, sites
 from force.cache import forcing_csv_path
-from force.model_point import model_point
+from force.model_point import model_point, model_point_label, shared_model_points
 
 
 def read_output_data(file_path):
@@ -54,6 +54,9 @@ if __name__ == "__main__":
     rcm_name = config["rcm_name"]
     liquid = config["cfm_config"]["liquid"]
 
+    # model point of each site; also the inactive sites, to show all the sites that share a grid cell (FEAT-002)
+    model_points = shared_model_points(sites(active_only=False), rcm_name)
+
     save_dir = f"{config['CFM_data_path']}/cfm_figures/dh_dt"
     os.makedirs(save_dir, exist_ok=True)
 
@@ -80,7 +83,9 @@ if __name__ == "__main__":
 
         plt.xlabel("Time")
         plt.ylabel("dh/dt (m/day)")
-        plt.title(f"Rate of change of ice thickness (dh/dt) over time at {site}")
+        plt.title(
+            f"Rate of change of ice thickness (dh/dt) over time at {site}\n{model_point_label(site, model_points)}"
+        )
         plt.legend()
         plt.grid()
         plt.savefig(f"{save_dir}/dh_dt_time_series_{site}_{liquid}_{rcm_name}.png", dpi=300)

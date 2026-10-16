@@ -22,7 +22,7 @@ logging.basicConfig(level=logging.INFO)
 
 from cfm_config import config, sites
 from force.cache import forcing_csv_path
-from force.model_point import model_point
+from force.model_point import model_point, model_point_label, shared_model_points
 
 if __name__ == "__main__":
     borehole_sites = sites()
@@ -33,6 +33,10 @@ if __name__ == "__main__":
         # Load MAR and RACMO data for the model point of this site from the forcing cache
         mar_data_dict[site] = pd.read_csv(forcing_csv_path(model_point(info, "MAR")))
         racmo_data_dict[site] = pd.read_csv(forcing_csv_path(model_point(info, "RACMO")))
+
+    # model points of each site; also the inactive sites, to show all the sites that share a grid cell (FEAT-002)
+    all_sites = sites(active_only=False)
+    model_points = {rcm: shared_model_points(all_sites, rcm) for rcm in ("MAR", "RACMO")}
 
     save_dir = f"{config['CFM_data_path']}/cfm_figures/rcm_comp"
     os.makedirs(save_dir, exist_ok=True)
@@ -59,7 +63,12 @@ if __name__ == "__main__":
                 linestyle="--",
                 alpha=0.5,
             )
-            plt.title(f"{var.capitalize()} Time Series at {site}")
+            plt.title(
+                f"{var.capitalize()} Time Series at {site}\n"
+                f"MAR {model_point_label(site, model_points['MAR'])}\n"
+                f"RACMO {model_point_label(site, model_points['RACMO'])}",
+                fontsize=9,
+            )
             plt.xlabel("Time")
             plt.ylabel(var.capitalize())
             plt.legend()

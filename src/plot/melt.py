@@ -1,7 +1,7 @@
 import matplotlib.pyplot as plt
 import xarray as xr
 import logging
-from typing import Dict, Tuple, Literal
+from typing import Dict, Literal, Optional, Tuple
 
 from cfm_config import config
 
@@ -9,7 +9,11 @@ logging.basicConfig(level=logging.INFO)
 
 
 def plot_larsen_c_melt(
-    rcm_name: Literal["mar", "racmo"], lat_name: str, lon_name: str, borehole_sites: Dict[str, Tuple[float, float]]
+    rcm_name: Literal["mar", "racmo"],
+    lat_name: str,
+    lon_name: str,
+    borehole_sites: Dict[str, Tuple[float, float]],
+    labels: Optional[Dict[str, str]] = None,
 ) -> None:
     """Loads and plots the average yearly melt map for the Larsen C area for a given RCM.
 
@@ -18,6 +22,7 @@ def plot_larsen_c_melt(
         lat_name (str): name of latitude variable in the melt dataset
         lon_name (str): name of longitude variable in the melt dataset
         borehole_sites (Dict[str, Tuple[float, float]]): dictionary of borehole site names and their lat/lon coordinates to plot on the map
+        labels (Dict[str, str], optional): legend label for each site, for example its model point. Default: the name.
     """
 
     melt_ds = xr.open_dataarray(
@@ -37,8 +42,8 @@ def plot_larsen_c_melt(
     plt.figure(figsize=(10, 8))
     melt_ds.plot(x=lon_name, y=lat_name, cmap="Blues", vmax=1200)
     for site, (lat, lon) in borehole_sites.items():
-        plt.plot(lon, lat, marker="o", markersize=5, label=site)
-    plt.legend()
+        plt.plot(lon, lat, marker="o", markersize=5, label=(labels or {}).get(site, site))
+    plt.legend(fontsize=7)
     plt.title(f"Average Yearly Melt Map for Larsen C ({rcm_name.upper()})")
     plt.xlabel("Longitude")
     plt.ylabel("Latitude")
