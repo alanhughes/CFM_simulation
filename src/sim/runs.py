@@ -4,7 +4,7 @@ find_runs() reads the manifest.json of each run folder under runs/ (see sim.mani
 runs that agree with the filters. find_run() returns one run. The site filter uses the site table (sites.yaml) and
 the model point of the site, as two sites in one grid cell share a run (FEAT-002).
 
-index.parquet is only an export of runs_table() for the user, made on request (scripts/find_runs.py --index). The code
+index.csv is only an export of runs_table() for the user, made on request (scripts/find_runs.py --index). The code
 never reads it, so it cannot be out of date for a query.
 """
 
