@@ -33,8 +33,11 @@ def measure_cfm_identity(version: dict) -> dict:
         commit = _run("git", "-C", repo, "rev-parse", "HEAD").strip()
     except (subprocess.CalledProcessError, FileNotFoundError) as error:
         raise RuntimeError(f"CFM repo {repo} of version {version['label']!r} is not a git checkout.") from error
-    status = _run("git", "-C", repo, "status", "--porcelain")
+    status = _run("git", "-C", repo, "status", "--porcelain", "--untracked-files=all")
     diff = _run("git", "-C", repo, "diff", "HEAD", "--binary")
+    # the diff of the .py files only (":/*.py" is every .py file from the top of the checkout): the run hash uses
+    # this one, so a change to example output in the checkout does not give a new run
+    code_diff = _run("git", "-C", repo, "diff", "HEAD", "--binary", "--", ":/*.py")
     pip_freeze = [line for line in _run(python, "-m", "pip", "freeze").splitlines() if not _OWN_PACKAGE.match(line)]
 
     return {
@@ -43,6 +46,7 @@ def measure_cfm_identity(version: dict) -> dict:
         "status": status.splitlines(),
         "code_changes": [path for path in changed_paths(status) if path.endswith(".py")],
         "diff_sha256": hashlib.sha256(diff.encode()).hexdigest(),
+        "code_diff_sha256": hashlib.sha256(code_diff.encode()).hexdigest(),
         "python_version": _run(python, "-c", "import sys; print(sys.version)").strip(),
         "pip_freeze": pip_freeze,
     }
@@ -63,10 +67,33 @@ def check_cfm_identity(identity: dict) -> None:
 
 
 def wrapper_identity() -> dict | None:
-    """Commit and local changes of this repo, or None if it is not a git checkout."""
+    """Commit, local changes and src/ tree of this repo, or None if it is not a git checkout.
+
+    src_tree is the git tree hash of src/ at HEAD (git rev-parse HEAD:src). The run hash uses it, not the commit, so a
+    commit that changes only docs, scripts or tests gives the same run hash. src_code_changes are the uncommitted .py
+    changes in src/, which check_wrapper_identity() refuses, as src_tree does not include them.
+    """
     try:
         commit = _run("git", "-C", _REPO_ROOT, "rev-parse", "HEAD").strip()
     except (subprocess.CalledProcessError, FileNotFoundError):
         return None
     status = _run("git", "-C", _REPO_ROOT, "status", "--porcelain")
-    return {"path": _REPO_ROOT, "commit": commit, "status": status.splitlines()}
+    src_status = _run("git", "-C", _REPO_ROOT, "status", "--porcelain", "--untracked-files=all", "--", ":/src")
+    return {
+        "path": _REPO_ROOT,
+        "commit": commit,
+        "status": status.splitlines(),
+        "src_tree": _run("git", "-C", _REPO_ROOT, "rev-parse", "HEAD:src").strip(),
+        "src_code_changes": [path for path in changed_paths(src_status) if path.endswith(".py")],
+    }
+
+
+def check_wrapper_identity(identity: dict | None) -> None:
+    """Refuse a run if this repo is not a git checkout, or if src/ has uncommitted .py changes (FEAT-001 Q4)."""
+    if identity is None:
+        raise RuntimeError(f"{_REPO_ROOT} is not a git checkout, so the run hash cannot include the code in src/.")
+    if identity["src_code_changes"]:
+        raise RuntimeError(
+            f"{identity['path']} has uncommitted code changes in src/: {', '.join(identity['src_code_changes'])}. "
+            "Commit them first, so that the run hash includes them."
+        )

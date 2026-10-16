@@ -9,7 +9,8 @@ import sys
 import pytest
 
 from cfm_config import cfm_version, config
-from sim.identity import changed_paths, check_cfm_identity, measure_cfm_identity
+import sim.identity
+from sim.identity import changed_paths, check_cfm_identity, check_wrapper_identity, measure_cfm_identity, wrapper_identity
 from sim.run import import_cfm
 
 
@@ -124,3 +125,75 @@ def test_pip_freeze_ignores_pythonpath(cfm_repo, tmp_path, monkeypatch):
     (bad / "requires.txt").write_text("numpy\n")  # no PKG-INFO, so no version
     monkeypatch.setenv("PYTHONPATH", str(tmp_path / "src"))
     assert identity(cfm_repo)["pip_freeze"]
+
+
+def test_untracked_code_in_new_folder_is_refused(cfm_repo):
+    """git status shows a new folder as one line ("?? sub/"), so without --untracked-files=all its .py were missed."""
+    (cfm_repo / "sub").mkdir()
+    (cfm_repo / "sub" / "new.py").write_text("")
+    with pytest.raises(RuntimeError, match="sub/new.py"):
+        check_cfm_identity(identity(cfm_repo))
+
+
+def test_code_diff_hash_ignores_data_changes(cfm_repo):
+    clean = identity(cfm_repo)
+    (cfm_repo / "CFMresults.hdf5").write_text("new data")
+    changed = identity(cfm_repo)
+    assert changed["diff_sha256"] != clean["diff_sha256"]
+    assert changed["code_diff_sha256"] == clean["code_diff_sha256"]
+
+
+def test_code_diff_hash_from_a_subfolder(cfm_repo):
+    """The CFM repo in config.yaml is CFM_main, a subfolder of the checkout. The code diff must include all .py files."""
+    sub = cfm_repo / "CFM_main"
+    sub.mkdir()
+    (sub / "keep.txt").write_text("")
+    clean = identity(sub)["code_diff_sha256"]
+    (cfm_repo / "melt.py").write_text("x = 2\n")
+    assert identity(sub)["code_diff_sha256"] != clean
+
+
+@pytest.fixture
+def wrapper_repo(tmp_path, monkeypatch):
+    """A committed checkout with src/, docs and scripts, in place of this repo."""
+    repo = tmp_path / "wrapper"
+    (repo / "src").mkdir(parents=True)
+    (repo / "src" / "run.py").write_text("x = 1\n")
+    (repo / "README.md").write_text("docs\n")
+    git(repo, "init", "-q")
+    git(repo, "add", ".")
+    git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init")
+    monkeypatch.setattr(sim.identity, "_REPO_ROOT", str(repo))
+    return repo
+
+
+def commit_all(repo):
+    git(repo, "add", ".")
+    git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "change")
+
+
+def test_src_tree_ignores_commits_outside_src(wrapper_repo):
+    before = wrapper_identity()
+    (wrapper_repo / "README.md").write_text("new docs\n")
+    commit_all(wrapper_repo)
+    after = wrapper_identity()
+    assert after["commit"] != before["commit"]
+    assert after["src_tree"] == before["src_tree"]
+    (wrapper_repo / "src" / "run.py").write_text("x = 2\n")
+    commit_all(wrapper_repo)
+    assert wrapper_identity()["src_tree"] != before["src_tree"]
+
+
+def test_uncommitted_src_code_is_refused(wrapper_repo):
+    check_wrapper_identity(wrapper_identity())
+    (wrapper_repo / "README.md").write_text("new docs\n")
+    check_wrapper_identity(wrapper_identity())
+    (wrapper_repo / "src" / "sub").mkdir()
+    (wrapper_repo / "src" / "sub" / "new.py").write_text("")
+    with pytest.raises(RuntimeError, match="src/sub/new.py"):
+        check_wrapper_identity(wrapper_identity())
+
+
+def test_wrapper_not_a_git_checkout_is_refused():
+    with pytest.raises(RuntimeError, match="not a git checkout"):
+        check_wrapper_identity(None)
