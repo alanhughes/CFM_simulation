@@ -15,7 +15,10 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__f
 
 
 def _run(*args: str) -> str:
-    return subprocess.run(args, capture_output=True, text=True, check=True).stdout
+    # without PYTHONPATH, so pip freeze describes the CFM version's own environment. With this repo's src on it (as
+    # sim.worker runs), pip also reads any stale src/cfm.egg-info, and fails on its metadata
+    env = {key: value for key, value in os.environ.items() if key != "PYTHONPATH"}
+    return subprocess.run(args, capture_output=True, text=True, check=True, env=env).stdout
 
 
 def changed_paths(status: str) -> list[str]:
