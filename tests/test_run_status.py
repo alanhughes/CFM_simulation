@@ -55,7 +55,7 @@ def cfm_calls(monkeypatch):
 def identities(monkeypatch):
     """Stub out the model point (which reads the RCM grid) and the identities (which run git and pip freeze)."""
     cfm = dict(CFM_IDENTITY)
-    wrapper = {"commit": "w", "status": [], "src_tree": "tree"}
+    wrapper = {"commit": "w", "status": [], "src_tree": "tree", "run_code_sha256": "code"}
     monkeypatch.setattr(sim.run, "model_point_at", lambda lat, lon, rcm_name: MODEL_POINT)
     monkeypatch.setattr(sim.run, "measure_cfm_identity", lambda version: {**version, **cfm})
     monkeypatch.setattr(sim.run, "check_cfm_identity", lambda identity: None)
@@ -139,10 +139,10 @@ def test_sites_are_recorded(data_path, cfm_calls):
         lambda ids: ids["cfm"].update(commit="def"),
         lambda ids: ids["cfm"].update(code_diff_sha256="e"),
         lambda ids: ids["cfm"].update(pip_freeze=["a==2"]),
-        lambda ids: ids["wrapper"].update(src_tree="tree2"),
+        lambda ids: ids["wrapper"].update(run_code_sha256="code2"),
         lambda ids: open(forcing_csv_path(MODEL_POINT), "a").write("1979-01-02,251.0\n"),
     ],
-    ids=["cfm_config", "wrapper_param", "cfm_commit", "cfm_patch", "pip_freeze", "src_tree", "forcing"],
+    ids=["cfm_config", "wrapper_param", "cfm_commit", "cfm_patch", "pip_freeze", "run_code", "forcing"],
 )
 def test_a_change_gives_a_new_run(data_path, cfm_calls, identities, monkeypatch, change):
     monkeypatch.setitem(config, "sublim_sf", config["sublim_sf"])
@@ -158,7 +158,7 @@ def test_a_change_gives_a_new_run(data_path, cfm_calls, identities, monkeypatch,
     "change",
     [
         lambda ids: ids["cfm"].update(status=[" M CFMoutput_example/x.hdf5"], diff_sha256="x"),
-        lambda ids: ids["wrapper"].update(commit="w2", status=[" M README.md"]),
+        lambda ids: ids["wrapper"].update(commit="w2", status=[" M README.md"], src_tree="tree2"),
         lambda ids: ids["cfm"].update(repo="/elsewhere/CFM_main", python="/elsewhere/python"),
     ],
     ids=["cfm_data_change", "wrapper_commit", "paths"],

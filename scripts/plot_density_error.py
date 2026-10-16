@@ -3,7 +3,10 @@ Working script for plotting simulated density profiles against in situ density p
 could be integrated into src/plot/results.py if we decide to keep these plots
 
 Usage:
-    python density_error.py
+    python plot_density_error.py [--cfm <label>]
+
+The runs are found from their manifests (sim.runs.find_run), with the CFM version from --cfm (default_cfm_version if
+not given).
 
 Plots the active sites in sites.yaml, each with its own model time windows (the "windows" key). A site with no
 windows stops the script with an error (BUG-005). Requires the physical densification schemes
@@ -24,15 +27,21 @@ import matplotlib.pyplot as plt
 import xarray as xr
 import pandas as pd
 import numpy as np
+import argparse
 import logging
 import os
 
-from cfm_config import cfm_output_folder, config, sites
+from cfm_config import cfm_version, config, sites
 from force.model_point import model_point_label, shared_model_points
+from sim.runs import find_run
 
 logging.basicConfig(level=logging.INFO)
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Plot the model density against the in situ density for each site")
+    parser.add_argument("--cfm", help="CFM version (a label in cfm_versions); default_cfm_version if not given")
+    cfm = cfm_version(parser.parse_args().cfm)["label"]
+
     borehole_sites = sites()
     physrho_values = [
         "GSFC2020",
@@ -51,7 +60,6 @@ if __name__ == "__main__":
     os.makedirs(save_dir, exist_ok=True)
 
     for site, info in borehole_sites.items():
-        lat, lon = info.lat, info.lon
         # model time windows of this site, in decimal years (sites.yaml) - stops with an error if it has none (BUG-005)
         windows = info.decimal_year_windows()
 
@@ -65,7 +73,15 @@ if __name__ == "__main__":
         # plt.plot(in_situ_density, in_situ_depth, label="In situ", color="k", linewidth=1)
         for physrho in physrho_values:
             # load simulation
-            output_path = f"{cfm_output_folder(lat, lon, physrho, melt_scheme, rcm_name)}/CFMresults.hdf5"
+            output_path = find_run(
+                site=site,
+                rcm_name=rcm_name,
+                physRho=physrho,
+                liquid=melt_scheme,
+                start_year=config["start_year"],
+                end_year=config["end_year"],
+                cfm=cfm,
+            ).results_file
             with xr.open_dataset(output_path, engine="h5netcdf", phony_dims="sort") as ds:
                 results_dict = {
                     "model_time_matrix": ds["density"][1:, 0],
@@ -125,4 +141,4 @@ if __name__ == "__main__":
         plt.title(f"Density vs Depth for {site}\n{model_point_label(site, model_points)}", fontsize=9)
         plt.legend()
         plt.grid()
-        plt.savefig(f"{save_dir}/{site}_{melt_scheme}_{rcm_name}.png")
+        plt.savefig(f"{save_dir}/{site}_{melt_scheme}_{rcm_name}_{cfm}.png")

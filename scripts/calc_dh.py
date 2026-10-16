@@ -4,19 +4,24 @@ and creates time series plots of dh/dt for each physical density option. Sites, 
 from config.yaml. The time series are saved to csv files, and the plots and csvs are written to
 {CFM_data_path}/cfm_figures/dh_dt
 
+The runs are found from their manifests (sim.runs.find_run), with the CFM version from --cfm (default_cfm_version if
+not given).
+
 Usage:
-    - python calc_dh.py
+    - python calc_dh.py [--cfm <label>]
 
 """
 
+import argparse
 import os
 import xarray as xr
 import pandas as pd
 import matplotlib.pyplot as plt
 
-from cfm_config import cfm_output_folder, config, sites
+from cfm_config import cfm_version, config, sites
 from force.cache import forcing_csv_path
 from force.model_point import model_point, model_point_label, shared_model_points
+from sim.runs import find_run
 
 
 def read_output_data(file_path):
@@ -48,6 +53,10 @@ def read_output_data(file_path):
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Calculate and plot dh/dt for the sites in sites.yaml")
+    parser.add_argument("--cfm", help="CFM version (a label in cfm_versions); default_cfm_version if not given")
+    cfm = cfm_version(parser.parse_args().cfm)["label"]
+
     borehole_sites = sites()
     phys_rho_options = ("GSFC2020", "HLdynamic", "Crocus", "Barnola1991", "Ligtenberg2011")
     start, end = config["start_year"], config["end_year"]
@@ -61,14 +70,15 @@ if __name__ == "__main__":
     os.makedirs(save_dir, exist_ok=True)
 
     for site, info in borehole_sites.items():
-        lat, lon = info.lat, info.lon
         input_path = forcing_csv_path(model_point(info, rcm_name), start, end)
         input_df = pd.read_csv(input_path, parse_dates=["TIME"])
         input_df = input_df[input_df["TIME"] >= pd.Timestamp("1980-01-01")]
 
         plt.figure(figsize=(10, 6))
         for phys_rho in phys_rho_options:
-            output_path = f"{cfm_output_folder(lat, lon, phys_rho, liquid, rcm_name)}/CFMresults.hdf5"
+            output_path = find_run(
+                site=site, rcm_name=rcm_name, physRho=phys_rho, liquid=liquid, start_year=start, end_year=end, cfm=cfm
+            ).results_file
             results_dict = read_output_data(output_path)
 
             # Align lengths so time and DIP-derived series are paired safely.
@@ -79,7 +89,7 @@ if __name__ == "__main__":
 
             # save
             output_df = pd.DataFrame({"TIME": input_df["TIME"], "dh_dt": dH_step})
-            output_df.to_csv(f"{save_dir}/dh_dt_time_series_{site}_{phys_rho}_{liquid}_{rcm_name}.csv", index=False)
+            output_df.to_csv(f"{save_dir}/dh_dt_time_series_{site}_{phys_rho}_{liquid}_{rcm_name}_{cfm}.csv", index=False)
 
         plt.xlabel("Time")
         plt.ylabel("dh/dt (m/day)")
@@ -88,5 +98,5 @@ if __name__ == "__main__":
         )
         plt.legend()
         plt.grid()
-        plt.savefig(f"{save_dir}/dh_dt_time_series_{site}_{liquid}_{rcm_name}.png", dpi=300)
+        plt.savefig(f"{save_dir}/dh_dt_time_series_{site}_{liquid}_{rcm_name}_{cfm}.png", dpi=300)
         plt.close()

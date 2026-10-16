@@ -66,12 +66,23 @@ def check_cfm_identity(identity: dict) -> None:
         logging.warning(f"CFM checkout {repo} has uncommitted changes to files that are not code: {', '.join(other)}.")
 
 
-def wrapper_identity() -> dict | None:
-    """Commit, local changes and src/ tree of this repo, or None if it is not a git checkout.
+# the folders of src/ that a CFM run does not import (tests/test_identity.py checks this). A change to them does not
+# change the run hash, and they can have uncommitted changes
+RUN_CODE_EXCLUDED = ("src/plot/",)
 
-    src_tree is the git tree hash of src/ at HEAD (git rev-parse HEAD:src). The run hash uses it, not the commit, so a
-    commit that changes only docs, scripts or tests gives the same run hash. src_code_changes are the uncommitted .py
-    changes in src/, which check_wrapper_identity() refuses, as src_tree does not include them.
+
+def _is_run_code(path: str) -> bool:
+    return path.startswith("src/") and not path.startswith(RUN_CODE_EXCLUDED)
+
+
+def wrapper_identity() -> dict | None:
+    """Commit, local changes and the run code of this repo, or None if it is not a git checkout.
+
+    The run code is src/ without RUN_CODE_EXCLUDED, at HEAD. run_code_sha256 is the SHA-256 of its git ls-tree list
+    (the path and blob hash of each file). The run hash uses it, not the commit, so a commit that changes only docs,
+    scripts, tests or src/plot/ gives the same run hash. src_tree (git rev-parse HEAD:src) is recorded only.
+    src_code_changes are the uncommitted .py changes in the run code, which check_wrapper_identity() refuses, as
+    run_code_sha256 does not include them.
     """
     try:
         commit = _run("git", "-C", _REPO_ROOT, "rev-parse", "HEAD").strip()
@@ -79,17 +90,22 @@ def wrapper_identity() -> dict | None:
         return None
     status = _run("git", "-C", _REPO_ROOT, "status", "--porcelain")
     src_status = _run("git", "-C", _REPO_ROOT, "status", "--porcelain", "--untracked-files=all", "--", ":/src")
+    tree = _run("git", "-C", _REPO_ROOT, "ls-tree", "-r", "--full-tree", "HEAD", "src")
+    run_code = [line for line in tree.splitlines() if _is_run_code(line.split("\t", 1)[1])]
     return {
         "path": _REPO_ROOT,
         "commit": commit,
         "status": status.splitlines(),
         "src_tree": _run("git", "-C", _REPO_ROOT, "rev-parse", "HEAD:src").strip(),
-        "src_code_changes": [path for path in changed_paths(src_status) if path.endswith(".py")],
+        "run_code_sha256": hashlib.sha256("\n".join(run_code).encode()).hexdigest(),
+        "src_code_changes": [
+            path for path in changed_paths(src_status) if path.endswith(".py") and _is_run_code(path)
+        ],
     }
 
 
 def check_wrapper_identity(identity: dict | None) -> None:
-    """Refuse a run if this repo is not a git checkout, or if src/ has uncommitted .py changes (FEAT-001 Q4)."""
+    """Refuse a run if this repo is not a git checkout, or if the run code has uncommitted .py changes (FEAT-001 Q4)."""
     if identity is None:
         raise RuntimeError(f"{_REPO_ROOT} is not a git checkout, so the run hash cannot include the code in src/.")
     if identity["src_code_changes"]:

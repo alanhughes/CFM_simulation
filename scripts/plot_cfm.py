@@ -5,7 +5,10 @@ the site (by name in sites.yaml) and physical densification schemes, or it can u
 config.yaml file if no command line arguments are provided.
 
 Usage:
-    python plot_cfm.py --site CI-0 --physrhols GSFC2020 Crocus --rcm RACMO --liquid bucket
+    python plot_cfm.py --site CI-0 --physrhols GSFC2020 Crocus --rcm RACMO --liquid bucket [--cfm <label>]
+
+The runs are found from their manifests (sim.runs.find_run), with the CFM version from --cfm (default_cfm_version if
+not given).
 """
 
 import argparse
@@ -41,6 +44,8 @@ if __name__ == "__main__":
         help="Meltwater scheme to use (currently only bucket)",
     )
 
+    parser.add_argument("--cfm", type=str, help="CFM version (a label in cfm_versions); default_cfm_version if not given")
+
     args = parser.parse_args()
     if (
         args.site is not None
@@ -62,4 +67,4 @@ if __name__ == "__main__":
         liquid = config["cfm_config"]["liquid"]
         logging.info("Using borehole location and physrho from config.yaml")
 
-    ResultsPlotter(site.lat, site.lon, phys_rho, rcm_name, liquid).plot()
+    ResultsPlotter(site.name, phys_rho, rcm_name, liquid, cfm=args.cfm).plot()
