@@ -1,8 +1,8 @@
-"""Tests for the CFM output names built in cfm_config.py (BUG-001). Run from the repo root."""
+"""Tests for the coordinate format in cfm_config.py (BUG-001). Run from the repo root."""
 
 import pytest
 
-from cfm_config import cfm_output_folder, config, format_coord, sites
+from cfm_config import format_coord, sites
 
 
 @pytest.mark.parametrize(
@@ -20,20 +20,8 @@ def test_format_coord(value, expected):
     assert format_coord(value) == expected
 
 
-def test_cfm_output_folder_ci120(monkeypatch):
-    monkeypatch.setitem(config, "CFM_data_path", "/data")
-    monkeypatch.setitem(config, "start_year", 1979)
-    monkeypatch.setitem(config, "end_year", 2024)
-    assert (
-        cfm_output_folder(-67.000, -61.486, "GSFC2020", "bucket", "RACMO")
-        == "/data/cfm_output/CFMoutput_-67.000_-61.486_1979_2024_GSFC2020_bucket_RACMO"
-    )
-
-
-def test_borehole_sites_have_unique_names():
+def test_borehole_sites_have_unique_coordinates():
     table = sites(active_only=False)
     assert {"CI-120", "J108", "SI47"} <= table.keys()  # active and inactive sites were both found
-    folders = {
-        name: cfm_output_folder(site.lat, site.lon, "GSFC2020", "bucket", "RACMO") for name, site in table.items()
-    }
-    assert len(set(folders.values())) == len(folders), folders
+    coords = {name: (format_coord(site.lat), format_coord(site.lon)) for name, site in table.items()}
+    assert len(set(coords.values())) == len(coords), coords

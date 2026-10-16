@@ -56,19 +56,6 @@ def format_coord(value: float) -> str:
     return str(Decimal(str(value)).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP))
 
 
-def run_id(lat: float, lon: float, phys_rho: str, liquid: str, rcm_name: str) -> str:
-    """Identifier shared by the CFM output folder and the CFM config JSON for one run."""
-    return (
-        f"{format_coord(lat)}_{format_coord(lon)}_{config['start_year']}_{config['end_year']}"
-        f"_{phys_rho}_{liquid}_{rcm_name}"
-    )
-
-
-def cfm_output_folder(lat: float, lon: float, phys_rho: str, liquid: str, rcm_name: str) -> str:
-    """Full path of the CFM output folder for one run."""
-    return f"{config['CFM_data_path']}/cfm_output/CFMoutput_{run_id(lat, lon, phys_rho, liquid, rcm_name)}"
-
-
 @dataclass(frozen=True)
 class Site:
     """One entry of sites.yaml. The name, lat and lon of a site do not change (see sites.lock)."""

@@ -6,7 +6,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
 
-from cfm_config import cfm_output_folder, config, format_coord
+from cfm_config import cfm_version, config
+from sim.runs import find_run
 
 logging.basicConfig(level=logging.INFO)
 
@@ -14,32 +15,42 @@ logging.basicConfig(level=logging.INFO)
 class ResultsPlotter:
     def __init__(
         self,
-        lat: float,
-        lon: float,
+        site: str,
         phys_rho: List[str],
         rcm_name: Literal["RACMO", "MAR"],
         liquid: Literal["bucket"],
+        cfm: str | None = None,
     ) -> None:
-        """Initialize the ResultsPlotter with borehole location and physical densification schemes.
+        """Initialize the ResultsPlotter with a site and physical densification schemes.
         Args:
-            lat (float): Borehole latitude
-            lon (float): Borehole longitude
+            site (str): Site name in sites.yaml. The runs are those of its model point (FEAT-001, FEAT-002)
             phys_rho (List[str]): List of physical densification schemes to plot
             rcm_name (Literal["RACMO", "MAR"]): RCM name to use for forcing data (e.g., MAR or RACMO)
             liquid (Literal["bucket"]): Meltwater scheme to use (currently only bucket)
+            cfm (str | None): Label of the CFM version (default_cfm_version if None)
         """
 
-        self.lat: float = lat
-        self.lon: float = lon
+        self.site: str = site
+        self.cfm: str = cfm_version(cfm)["label"]
         self.phys_rho: List[str] = phys_rho
         self.rcm_name: Literal["RACMO", "MAR"] = rcm_name
         self.liquid: Literal["bucket"] = liquid
 
         phys_rho_str = "_".join(self.phys_rho)
+        # the CFMresults.hdf5 of each scheme, found from the run manifests
         self._output_paths: List[str] = [
-            cfm_output_folder(self.lat, self.lon, scheme, self.liquid, self.rcm_name) for scheme in self.phys_rho
+            find_run(
+                site=site,
+                rcm_name=rcm_name,
+                physRho=scheme,
+                liquid=liquid,
+                start_year=config["start_year"],
+                end_year=config["end_year"],
+                cfm=self.cfm,
+            ).results_file
+            for scheme in self.phys_rho
         ]
-        self._figure_path: str = f"{config['CFM_data_path']}/cfm_figures/figures_{format_coord(self.lat)}_{format_coord(self.lon)}_{config['start_year']}_{config['end_year']}_{phys_rho_str}_{self.liquid}_{self.rcm_name}"
+        self._figure_path: str = f"{config['CFM_data_path']}/cfm_figures/figures_{site}_{config['start_year']}_{config['end_year']}_{phys_rho_str}_{self.liquid}_{self.rcm_name}_{self.cfm}"
         os.makedirs(self._figure_path, exist_ok=True)
 
         self._thickness_change_range: List[float] = config[
@@ -52,7 +63,7 @@ class ResultsPlotter:
         This function will call the internal functions to load the data and create the plots, and can be called from an external script or notebook to generate the figures.
         """
 
-        logging.info(f"Plotting results for lat={self.lat}, lon={self.lon}, phys_rho={self.phys_rho}")
+        logging.info(f"Plotting results for site={self.site}, phys_rho={self.phys_rho}, cfm={self.cfm}")
         logging.info(f"Figures will be saved to: {self._figure_path}")
 
         logging.info("Loading data...")
@@ -73,7 +84,7 @@ class ResultsPlotter:
         """
 
         for phys_rho, output_path in zip(self.phys_rho, self._output_paths):
-            with xr.open_dataset(f"{output_path}/CFMresults.hdf5", engine="h5netcdf", phony_dims="sort") as ds:
+            with xr.open_dataset(output_path, engine="h5netcdf", phony_dims="sort") as ds:
                 self._results_dicts[phys_rho] = {
                     "model_time_matrix": ds["density"][1:, 0],
                     "model_time_vector": ds["DIP"][1:, 0],

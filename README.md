@@ -112,12 +112,22 @@ python scripts/run_cfm.py --site CI-0 \
 {CFM_data_path}/runs/<model point>/<physrho>_<liquid>_<start>-<end>/<cfm label>/<hash8>/
 ```
 
-`<model point>` is the RCM grid cell, e.g. `RACMO_261_126`, so two sites in one cell share a run. `<hash8>` is the start of the **run hash**: the SHA-256 of everything that changes the results - all of `cfm_config`, `start_year`/`end_year`/`spin_end_year`/`sublim_sf`/`rho_bottom`, the model point and RCM release, the SHA-256 of the forcing CSV, the CFM's commit, `.py` patch, Python version and `pip freeze`, and the git tree of this repo's `src/` (`git rev-parse HEAD:src`). Changing any of them gives a new folder; commits that touch only docs, scripts or tests do not. Uncommitted `.py` changes in `src/` are refused, like those in the CFM.
+`<model point>` is the RCM grid cell, e.g. `RACMO_261_126`, so two sites in one cell share a run. `<hash8>` is the start of the **run hash**: the SHA-256 of everything that changes the results - all of `cfm_config`, `start_year`/`end_year`/`spin_end_year`/`sublim_sf`/`rho_bottom`, the model point and RCM release, the SHA-256 of the forcing CSV, the CFM's commit, `.py` patch, Python version and `pip freeze`, and the committed run code of this repo (`src/` without `src/plot/`, which a run does not import). Changing any of them gives a new folder; commits that touch only docs, scripts, tests or `src/plot/` do not. Uncommitted `.py` changes in the run code are refused, like those in the CFM.
 
 Each run folder holds `CFMconfig.json`, the CFM's `.hdf5` output, the wrapper's `run.log`, and a `manifest.json` that records the run's settings, the hash and what went into it (`hash_inputs`), the sites that asked for it, host and timings, and its `status`: `running`, then `complete` or `failed` (with the error). Two caching behaviours to be aware of:
 
 - A run is **skipped if its folder has a `complete` manifest with the same hash**. Pass `--force` to rerun it. A `failed` run, or a `running` one whose process has died, is rerun on its own. A folder with results but no manifest needs `--force`.
 - Forcing data that has already been processed is reused rather than regenerated. It is checked to cover `start_year` to `end_year` first: the ANT-12 `RACMO` data stops at 2023, so `end_year: 2024` stops with an error for `--rcm RACMO`.
+
+Scripts find runs from their manifests, not from a folder name: `sim.runs.find_runs(site="CI-0", physRho="GSFC2020", cfm="ab871c8")` (the site's model point, so two sites in one cell share a run), or from the shell:
+
+```bash
+python scripts/find_runs.py --site CI-0 --physrho GSFC2020     # table of complete runs
+python scripts/find_runs.py --status all --index               # all runs; also write {CFM_data_path}/index.parquet (needs pyarrow; or --index runs.csv)
+python scripts/link_sites.py                                   # {CFM_data_path}/sites/<site>/<rcm> -> ../../runs/<model point>
+```
+
+`plot_cfm.py`, `calc_dh.py` and `plot_density_error.py` take `--cfm <label>` (default `default_cfm_version`). If several complete runs match (e.g. before and after a change to the run code), they use the one that finished last and log a warning listing the others. The index file is only an export for you; no code reads it. `link_sites.py` replaces wrong links and never deletes anything that is not a link; `--dry-run` prints the changes only.
 
 The `scripts/*.sh` batch wrappers loop over sites and densification schemes, and `cd` to the repo root themselves, so they can be run from anywhere. `run_cfm_grid.sh` is a SLURM array job: submit it from the repo root (or set `CFM_SIM_ROOT`), and set `CFM_CONDA_ENV` if your env isn't called `cfm` (on luna it was `CFM3.10.11`).
 
