@@ -20,7 +20,7 @@ from force import extract
 from force.cache import ForcingCoverageError, forcing_json_path
 from force.grid import nearest_cell
 from force.model_point import clear_cache
-from force.process import ProcessRACMO, ProcessRACMO23
+from force.process import ProcessMAR, ProcessRACMO, ProcessRACMO23
 
 SITE_A = (-67.6, -65.1)
 SITE_B = (-67.78, -65.0)  # the cell of this site has a fill value in each file
@@ -56,6 +56,8 @@ SOURCE = {
     "RACMO": [v for v in RACMO_MAP if v not in ("rf", "alb")] + ["pr", "rsusgl"],
     "RACMO23": [v for v in RACMO23_MAP if v not in ("rf", "alb")] + ["pr", "rsusgl"],
 }
+# source files: RACMO 2 groups of years and RACMO23 3 years for each variable; MAR 3 years with all the variables
+N_SOURCE_FILES = {"RACMO": 2 * len(SOURCE["RACMO"]), "RACMO23": 3 * len(SOURCE["RACMO23"]), "MAR": 3}
 
 
 def _grid():
@@ -155,6 +157,69 @@ def _write_racmo23(folder, variables, years):
             )
 
 
+MAR_MAP = {
+    "TTZ": "T2m",
+    "TI1": "TSKIN",
+    "SU": "SUBLIM",
+    "SHF": "QH",
+    "LHF": "QL",
+    "SWD": "SW_d",
+    "LWD": "LW_d",
+    "RF": "RAIN",
+    "SF": "BDOT",
+    "AL2": "ALBEDO",
+    "ME": "SMELT",
+}
+# the dimensions of each MAR variable between TIME and (Y15_176, X18_215), as in MARv3.14.3-27.5km-daily-ERA5
+MAR_LEVELS = {"TTZ": "ZTQLEV1_1", "TI1": "OUTLAY", "SU": "SECTOR", "AL2": "SECTOR", "ME": "SECTOR1_1", "SMB": "SECTOR"}
+MAR_FILLED = ("SU", "RF", "SF", "ME", "SMB")  # variables with _FillValue and missing_value -1e34
+MAR_RELEASE = "MARvTEST-27.5km-daily-ERA5"
+
+
+def _write_mar(folder, years):
+    """MAR style files: one file per year with all the variables, some with a SECTOR, OUTLAY or height axis.
+
+    SECTOR is [2, 1] and OUTLAY starts at 0.1, so a wrong index (for example always 0) gives other values.
+    """
+    rng = np.random.default_rng(3)
+    lat, lon = _grid()
+    levels = {"SECTOR": [2.0, 1.0], "OUTLAY": [0.1, 0.0, 0.2], "SECTOR1_1": [1.0], "ZTQLEV1_1": [2.0]}
+    for year in years:
+        time = pd.date_range(f"{year}-01-01 12:00", f"{year}-12-31 12:00", freq="D")
+        minutes = ((time - pd.Timestamp("1900-01-01")) / pd.Timedelta(minutes=1)).to_numpy()
+        data_vars, encoding = {}, {}
+        for var in list(MAR_MAP) + ["SMB"]:
+            level = MAR_LEVELS.get(var)
+            shape = (len(time), len(levels[level]), NY, NX) if level else (len(time), NY, NX)
+            data = rng.normal(0, 1, shape).astype(np.float32)
+            if var in ("TTZ", "TI1"):
+                data = (-20 + 5 * data).astype(np.float32)  # degC
+            data[(3,) + (0,) * (data.ndim - 3) + (2, 4)] = np.nan
+            if level:
+                data[(3, -1, 2, 4)] = np.nan  # also at the kept level, for SECTOR (index 1)
+            dims = ("TIME",) + ((level,) if level else ()) + ("Y15_176", "X18_215")
+            data_vars[var] = (dims, data)
+            encoding[var] = {"zlib": True, "complevel": 4, "shuffle": True, "chunksizes": (1,) + shape[1:]}
+            if var in MAR_FILLED:
+                encoding[var].update(_FillValue=np.float32(-1e34), missing_value=np.float32(-1e34))
+            else:
+                encoding[var]["_FillValue"] = np.float32(np.nan)
+        ds = xr.Dataset(
+            data_vars,
+            coords={
+                "TIME": ("TIME", minutes, {"units": "minutes since 1900-01-01 00:00:00", "calendar": "gregorian"}),
+                "LAT": (("Y15_176", "X18_215"), lat),
+                "LON": (("Y15_176", "X18_215"), lon),
+                "X18_215": np.arange(NX, dtype=np.float32) * 27.5,
+                "Y15_176": np.arange(NY, dtype=np.float32) * 27.5,
+                **{name: np.array(values, dtype=np.float32) for name, values in levels.items()},
+            },
+        )
+        ds.to_netcdf(folder / f"{MAR_RELEASE}-{year}.nc", engine="netcdf4", encoding=encoding)
+    (folder / "AIS_files_for_download.txt").write_text("not data\n")  # the real folder has other files too
+    (folder / "OLD").mkdir(exist_ok=True)
+
+
 @pytest.fixture(scope="module")
 def racmo_dir(tmp_path_factory):
     folder = tmp_path_factory.mktemp("racmo")
@@ -170,14 +235,24 @@ def racmo23_dir(tmp_path_factory):
     return folder
 
 
+@pytest.fixture(scope="module")
+def mar_dir(tmp_path_factory):
+    folder = tmp_path_factory.mktemp("mar")
+    _write_mar(folder, [1979, 1980, 1981])
+    return folder
+
+
 @pytest.fixture
-def cfg(monkeypatch, racmo_dir, racmo23_dir, tmp_path):
+def cfg(monkeypatch, racmo_dir, racmo23_dir, mar_dir, tmp_path):
     """The shared config dict, with the synthetic data paths and a temporary CFM_data_path."""
     for key, value in {
         "RACMO_data_path": str(racmo_dir),
         "RACMO23_data_path": str(racmo23_dir),
+        "MAR_data_path": str(mar_dir),
         "RACMO_to_CFM_column_map": RACMO_MAP,
         "RACMO23_to_CFM_column_map": RACMO23_MAP,
+        "MAR_to_CFM_column_map": MAR_MAP,
+        "sector": 1.0,
         "RACMO_additional_vars": ["pr", "rsusgl"],
         "start_year": 1979,
         "end_year": 1981,
@@ -231,6 +306,31 @@ def _old_dataframe(cls, lat, lon):
                 df[col] = df[col] * 60 * 60 * 24
         df["RAIN"] = np.clip(df["RAIN"], a_min=0, a_max=None)
         frames.append(df[~df.index.duplicated(keep="first")])
+    return pd.concat(frames)
+
+
+def _old_mar_dataframe(lat, lon):
+    """The forcing DataFrame of the xarray MAR code that FEAT-003 removed (ProcessMAR._xr_to_input_dataframe).
+
+    This is a copy of that code, for the years start_year..end_year. It is the reference for the MAR tests.
+    """
+    folder = config["MAR_data_path"]
+    frames = []
+    for year in range(config["start_year"], config["end_year"] + 1):
+        xr_data = xr.open_dataset(f"{folder}/{MAR_RELEASE}-{year}.nc", engine="netcdf4", chunks="auto")
+        y_idx, x_idx, _ = nearest_cell(xr_data["LAT"], xr_data["LON"], lat, lon)
+        borehole_data = xr_data.isel(Y15_176=y_idx, X18_215=x_idx)
+        borehole_data = borehole_data.sel(SECTOR=config["sector"])
+        mapping = config["MAR_to_CFM_column_map"]
+        borehole_data = borehole_data.drop_vars([var for var in borehole_data.data_vars if var not in mapping])
+        borehole_df = borehole_data.to_dataframe().reset_index()
+        borehole_df = borehole_df[borehole_df["OUTLAY"] == 0.0]
+        borehole_df.rename(columns=mapping, inplace=True)
+        borehole_df.set_index("TIME", inplace=True)
+        borehole_df = borehole_df[list(mapping.values())]
+        borehole_df["TSKIN"] = borehole_df["TSKIN"] + 273.15
+        borehole_df["T2m"] = borehole_df["T2m"] + 273.15
+        frames.append(borehole_df[~borehole_df.index.duplicated(keep="first")])
     return pd.concat(frames)
 
 
@@ -352,6 +452,34 @@ def test_extract_points_matches_old_code(cfg, dataset, cls, site):
     pd.testing.assert_frame_equal(new, old, check_exact=True, check_freq=False)
 
 
+@pytest.mark.parametrize("site", [SITE_A, SITE_B])
+def test_extract_points_mar_matches_old_code(cfg, site):
+    old = _old_mar_dataframe(*site)
+    cell = _cell(site)
+    new = extract.extract_points("MAR", [cell])[cell]
+    pd.testing.assert_frame_equal(new, old, check_exact=True, check_freq=False)
+    assert new.index.name == "TIME" and new.index[0] == pd.Timestamp("1979-01-01 12:00")
+
+
+def test_mar_files_and_levels(cfg):
+    settings = extract.ExtractSettings.from_config("MAR")
+    assert settings.levels == {"OUTLAY": 0.0, "SECTOR": 1.0}
+    assert settings.unit_factors == {} and settings.unit_offsets == {"T2m": 273.15, "TSKIN": 273.15}
+    files = extract.list_files(settings)
+    assert list(files) == list(MAR_MAP)
+    assert [os.path.basename(p) for p in files["TI1"]] == [f"{MAR_RELEASE}-{y}.nc" for y in (1979, 1980, 1981)]
+    frames, source_files = extract.forcing_for_cells("MAR", [_cell(SITE_A)], use_cache=False)
+    assert len(source_files) == 3  # one file per year for all the variables
+    # SECTOR = 2 is index 0 in the synthetic files, so another config value gives other values
+    other, _ = extract.forcing_for_cells("MAR", [_cell(SITE_A)], use_cache=False, levels={"SECTOR": 2.0, "OUTLAY": 0.0})
+    assert not other[_cell(SITE_A)]["SUBLIM"].equals(frames[_cell(SITE_A)]["SUBLIM"])
+    assert other[_cell(SITE_A)]["T2m"].equals(frames[_cell(SITE_A)]["T2m"])  # TTZ has no SECTOR axis
+    with pytest.raises(ValueError, match="no single SECTOR"):
+        extract.forcing_for_cells("MAR", [_cell(SITE_A)], use_cache=False, levels={"SECTOR": 3.0, "OUTLAY": 0.0})
+    with pytest.raises(ValueError, match="OUTLAY"):
+        extract.forcing_for_cells("MAR", [_cell(SITE_A)], use_cache=False, levels={"SECTOR": 1.0})
+
+
 def test_extract_points_many_cells_and_processes(cfg):
     cells = [(2, 4), (0, 0), (8, 10), (2, 4)]
     one = extract.extract_points("RACMO23", cells, processes=1)
@@ -420,7 +548,7 @@ def test_cache_path(cfg):
     assert extract.cache_path("RACMO23") == "/elsewhere/RACMO23/x/cache.h5"
 
 
-@pytest.mark.parametrize("dataset", ["RACMO", "RACMO23"])
+@pytest.mark.parametrize("dataset", ["RACMO", "RACMO23", "MAR"])
 def test_cache_matches_direct_extraction(cfg, dataset):
     config["forcing_cache_margin"] = {"lat": 0.1, "lon": 0.2}
     cells = [_cell(SITE_A), _cell(SITE_B)]
@@ -428,7 +556,7 @@ def test_cache_matches_direct_extraction(cfg, dataset):
     cached, _ = extract.forcing_for_cells(dataset, cells, use_cache=True, cache_sites=[SITE_A])
     for cell in cells:
         pd.testing.assert_frame_equal(cached[cell], direct[cell], check_exact=True, check_freq=False)
-    assert len(files) == len(SOURCE[dataset]) * (2 if dataset == "RACMO" else 3)
+    assert len(files) == N_SOURCE_FILES[dataset]
     with h5py.File(extract.cache_path(dataset)) as h5:
         y0, y1, x0, x1 = extract.read_cache_meta(extract.cache_path(dataset))["box"]
         assert h5["columns/T2m"].chunks == (
@@ -491,10 +619,10 @@ def test_corrupt_cache_is_rebuilt(cfg):
 # ---------------------------------------------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("dataset, cls", [("RACMO", ProcessRACMO), ("RACMO23", ProcessRACMO23)])
+@pytest.mark.parametrize("dataset, cls", [("RACMO", ProcessRACMO), ("RACMO23", ProcessRACMO23), ("MAR", ProcessMAR)])
 @pytest.mark.parametrize("use_cache", [True, False])
 def test_process_writes_same_csv_as_old_code(cfg, dataset, cls, use_cache):
-    old = _old_dataframe(cls, *SITE_B)
+    old = _old_mar_dataframe(*SITE_B) if dataset == "MAR" else _old_dataframe(cls, *SITE_B)
     config["forcing_cache"] = use_cache
     processor = cls(*SITE_B)
     processor.process()
@@ -503,7 +631,7 @@ def test_process_writes_same_csv_as_old_code(cfg, dataset, cls, use_cache):
     with open(forcing_json_path(processor._save_path)) as file:
         record = json.load(file)
     assert record["extraction"].startswith("h5py") and record["model_point"]["i"] == _cell(SITE_B)[0]
-    assert len(record["source_files"]) == len(SOURCE[dataset]) * (2 if dataset == "RACMO" else 3)
+    assert len(record["source_files"]) == N_SOURCE_FILES[dataset]
     assert (record["extraction_cache"] is not None) == use_cache
 
 
