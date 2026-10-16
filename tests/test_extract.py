@@ -442,6 +442,23 @@ def test_corrupt_cache_is_rebuilt(cfg):
 # ---------------------------------------------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("dataset, cls", [("RACMO", ProcessRACMO), ("RACMO23", ProcessRACMO23)])
+def test_process_fast_switch_writes_same_csv(cfg, dataset, cls, tmp_path):
+    site = (-67.6, -65.1)
+    old = cls(*site)
+    old._save_path = str(tmp_path / "old.csv")
+    old.process()
+
+    config["forcing_fast_extraction"] = True
+    try:
+        new = cls(*site)
+        new.process()
+    finally:
+        del config["forcing_fast_extraction"]
+    with open(old._save_path) as a, open(new._save_path) as b:
+        assert a.read() == b.read()
+
+
 def test_write_forcing_csvs_skips_existing(cfg, tmp_path):
     targets = {str(tmp_path / "a.csv"): (-67.6, -65.1), str(tmp_path / "b.csv"): (-67.78, -65.0)}
     assert sorted(extract.write_forcing_csvs("RACMO", targets, use_cache=False)) == sorted(targets)

@@ -310,6 +310,13 @@ class ProcessRACMO(ProcessBase):
             xr.Dataset: RACMO data at the borehole location.
         """
 
+        if config.get("forcing_fast_extraction", False) and not os.path.exists(self._save_path):
+            # FEAT-003: h5py extraction in one parallel pass, through the local cache (see force/extract.py)
+            from .extract import write_forcing_csvs
+
+            write_forcing_csvs(self._rcm_name, {self._save_path: (self._borehole_lat, self._borehole_lon)})
+            return
+
         super().process(self._save_path)
 
     def _read_data(self) -> List[xr.Dataset]:
