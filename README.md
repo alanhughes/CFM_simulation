@@ -33,7 +33,7 @@ The keys that are machine-specific are the directory block at the top:
 | `MAR_data_path` / `RACMO_data_path` / `RACMO23_data_path` | Where the raw RCM NetCDF forcing files are read from |
 | `in_situ_data_path` | Where the in situ depth-density CSVs are read from |
 
-Everything below that block (borehole sites, densification options, RCM column mappings, plot limits) is machine-independent.
+Everything below that block (densification options, RCM column mappings, plot limits) is machine-independent. The sites are not in `config.yaml`: see [Sites](#sites).
 
 ## Data on the luna share
 
@@ -99,19 +99,38 @@ Keep the trailing `/` on both `rsync` paths, so the folder's contents are copied
 **All scripts must be run from the repo root** — `src/cfm_config.py` opens `config.yaml` by relative path. It also expands `{cpom_mount}` in the top-level paths, so if luna is mounted somewhere else on your machine, only `cpom_mount` needs changing.
 
 ```bash
-python scripts/run_cfm.py                                   # uses config.yaml defaults
-python scripts/run_cfm.py --lat -66.403 --lon -63.376 \
-    --physrho GSFC2020 --rcm RACMO --liquid bucket          # all five args required to override
+python scripts/run_cfm.py                                   # uses config.yaml defaults (default_site, ...)
+python scripts/run_cfm.py --site CI-0 \
+    --physrho GSFC2020 --rcm RACMO --liquid bucket          # any argument left out comes from config.yaml
 ```
 
-`run_cfm.py` processes the RCM forcing into a CSV under `{CFM_data_path}/cfm_input/`, then runs the CFM, writing to `{CFM_data_path}/cfm_output/CFMoutput_<lat>_<lon>_<years>_<physrho>_<liquid>_<rcm>/`.
+`run_cfm.py` processes the RCM forcing of the site's model point into the forcing cache (see below), then runs the CFM, writing to `{CFM_data_path}/cfm_output/CFMoutput_<lat>_<lon>_<years>_<physrho>_<liquid>_<rcm>/`.
 
 Each output folder holds a `manifest.json` that records the run's settings, host and timings, and its `status`: `running`, then `complete` or `failed` (with the error). The wrapper's log goes to `run.log` next to it. Two caching behaviours to be aware of:
 
 - A run is **skipped if its folder has a `complete` manifest**, even if `config.yaml` has changed since, because the folder name does not yet capture every setting. Pass `--force` to rerun it. A `failed` run, or a `running` one whose process has died, is rerun on its own. An old folder with `CFMresults.hdf5` but no manifest is treated as complete.
-- Forcing data that has already been processed is reused rather than regenerated.
+- Forcing data that has already been processed is reused rather than regenerated. It is checked to cover `start_year` to `end_year` first: the ANT-12 `RACMO` data stops at 2023, so `end_year: 2024` stops with an error for `--rcm RACMO`.
 
 The `scripts/*.sh` batch wrappers loop over sites and densification schemes, and `cd` to the repo root themselves, so they can be run from anywhere. `run_cfm_grid.sh` is a SLURM array job: submit it from the repo root (or set `CFM_SIM_ROOT`), and set `CFM_CONDA_ENV` if your env isn't called `cfm` (on luna it was `CFM3.10.11`).
+
+## Sites
+
+The sites (borehole locations with in situ measurements) are in `sites.yaml`, which git tracks, so everyone has the same table. Each site has `lat`, `lon`, the model time `windows` that `plot_density_error.py` compares with the measurements, an optional `profile` file name, and `active: false` if the plot and analysis scripts should leave it out by default. `batches` are named lists of sites for the batch wrappers (`python scripts/list_sites.py --batch batch_1`).
+
+**A site's name and coordinates never change.** `sites.lock` records them and `tests/test_sites.py` fails if they differ. To correct a site, add a new one (e.g. `JP21-v2`), and give the old one `active: false` and `superseded_by: JP21-v2`. Add every new site to `sites.lock` in the same commit. To run the CFM somewhere new, add it to both files first.
+
+### Model points and the forcing cache
+
+The CFM is forced with the data of a single RCM grid cell: the cell whose centre is nearest the site (great-circle distance). That cell is the site's *model point*, `<rcm>_<i>_<j>` (`force.model_point.model_point(site, rcm_name)`). Sites in the same cell get identical forcing and identical CFM output; the plots say so, e.g. `J409: RACMO_253_145, 3.8 km from the cell centre, same cell as J109`.
+
+Forcing is extracted once per model point, into a cache shared by all CFM versions:
+
+```
+{forcing_data_path}/<rcm_name>/<release>/<i>_<j>_<start_year>_<end_year>.csv
+{forcing_data_path}/<rcm_name>/<release>/<i>_<j>_<start_year>_<end_year>.json   # cell, source files, column map, units, dates
+```
+
+`forcing_data_path` defaults to `{CFM_data_path}/forcing`. `<release>` comes from the RCM file names, so a new data release gets new forcing. Old `cfm_input/` CSVs can be checked against the cache layout with `python scripts/migrate_forcing_csvs.py --dry-run <cfm_input folder>` (it only prints a plan).
 
 ## Sanity check
 
