@@ -118,7 +118,18 @@ The `scripts/*.sh` batch wrappers loop over sites and densification schemes, and
 The CFM's own example verifies the model side independently of any forcing data:
 
 ```bash
-cd $CFM_repo_path && python main.py example_df.json -n
+out=$(mktemp -d)
+python - "$CFM_repo_path" "$out" <<'EOF'
+import json, os, sys
+repo, out = sys.argv[1:]
+with open(os.path.join(repo, "example_df.json")) as f:
+    c = json.load(f)
+c["InputFileFolder"] = os.path.join(repo, c["InputFileFolder"])
+c["resultsFolder"] = os.path.join(out, "results")
+with open(os.path.join(out, "example_df.json"), "w") as f:
+    json.dump(c, f, indent=2)
+EOF
+(cd "$out" && python "$CFM_repo_path/main.py" "$out/example_df.json" -n)
 ```
 
-It takes a few seconds. Note it overwrites `CFMoutput_example/`, which will show as modified in the CFM repo's git status.
+It takes a few seconds, and writes everything to the temporary folder `$out`. Do not run `python main.py example_df.json` inside the CFM repo: that overwrites the tracked files in `CFMoutput_example/` and leaves `diagnostics_enthalpy.csv` behind. The config path must be absolute because `main.py` resolves a relative one against its own folder.
