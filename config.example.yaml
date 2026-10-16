@@ -126,10 +126,8 @@ MAR_temp_vars:
   - TTZ
   - TI1
 
-## Fast RACMO extraction and local forcing cache (FEAT-003, src/force/extract.py). Only for RACMO and RACMO23.
-## scripts/extract_forcing.py always uses the fast extraction; forcing_fast_extraction is for run_cfm.py.
+## Fast RACMO extraction and local forcing cache (FEAT-003, src/force/extract.py). RACMO and RACMO23 always use it.
 ## Every key here is optional; the values shown are the defaults.
-forcing_fast_extraction: false # true: ProcessRACMO/ProcessRACMO23 use the h5py extraction instead of xarray
 forcing_processes: 8 # worker processes, each reads one file at a time; each needs memory for 64 full maps
 forcing_cache: true # keep all cells in a box around the sites in a local cache.h5, so nearby sites need no new pass
 # folder of cache.h5, next to the forcing CSVs; placeholders: CFM_data_path, forcing_data_path, rcm_name, release
