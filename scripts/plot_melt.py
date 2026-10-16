@@ -7,12 +7,10 @@ Usage:
 """
 
 from plot import plot_larsen_c_melt
-from typing import Dict, Tuple
-
-from cfm_config import config
+from cfm_config import sites
 
 if __name__ == "__main__":
-    borehole_sites: Dict[str, Tuple[float, float]] = config["borehole_sites"]
+    borehole_sites = {name: (site.lat, site.lon) for name, site in sites().items()}
 
     plot_larsen_c_melt(
         rcm_name="mar",

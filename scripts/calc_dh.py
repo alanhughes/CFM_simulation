@@ -10,13 +10,11 @@ Usage:
 """
 
 import os
-from typing import Dict, Tuple
-
 import xarray as xr
 import pandas as pd
 import matplotlib.pyplot as plt
 
-from cfm_config import cfm_output_folder, config
+from cfm_config import cfm_output_folder, config, sites
 
 
 def read_output_data(file_path):
@@ -48,7 +46,7 @@ def read_output_data(file_path):
 
 
 if __name__ == "__main__":
-    borehole_sites: Dict[str, Tuple[float, float]] = config["borehole_sites"]
+    borehole_sites = sites()
     phys_rho_options = ("GSFC2020", "HLdynamic", "Crocus", "Barnola1991", "Ligtenberg2011")
     start, end = config["start_year"], config["end_year"]
     rcm_name = config["rcm_name"]
@@ -57,7 +55,8 @@ if __name__ == "__main__":
     save_dir = f"{config['CFM_data_path']}/cfm_figures/dh_dt"
     os.makedirs(save_dir, exist_ok=True)
 
-    for site, (lat, lon) in borehole_sites.items():
+    for site, info in borehole_sites.items():
+        lat, lon = info.lat, info.lon
         input_path = config["force_data_save_path_pattern"].format(
             CFM_data_path=config["CFM_data_path"],
             rcm_name=rcm_name,

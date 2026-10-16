@@ -37,20 +37,7 @@ end_year: 2024
 borehole_lat: -66.403
 borehole_lon: -63.376
 
-# borehole sites - these are the locations of the boreholes for which we have firn temperature profiles to compare to - used in plotting scripts mostly
-borehole_sites:
-  CI-0: [-66.403, -63.376]
-  CI-22: [-66.588, -63.212]
-  CI-120: [-67.000, -61.486]
-  WI-0: [-67.444, -64.953]
-  WI-70: [-67.500, -63.336]
-  # J108: [-67.108, -61.287]
-  # J208: [-68.300, -64.149]
-  # J409: [-68.395, -64.713]
-  # J109: [-68.395, -64.710]
-  # Y208: [-67.564, -63.257]
-  # JP21: [-68.0086, -64.3668]
-  # SI47: [-68.0408, -64.3236]
+# The sites (borehole locations with in situ measurements) and the batches are in sites.yaml (FEAT-002)
 
 # bounding box for larsenC area
 larsenC_box:
@@ -272,7 +259,3 @@ rcm_plot_cbar_limits:
   rsds: [50, 150]
   LWD: [160, 280]
   rlds: [160, 280]
-
-sites_batch_1: ["CI-0", "CI-22", "CI-120", "WI-0", "WI-70"]
-sites_batch_2: ["J108", "J208", "J409"]
-sites_batch_3: ["JP21", "SI47" ] 

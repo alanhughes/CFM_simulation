@@ -15,20 +15,20 @@ import os
 
 import matplotlib.pyplot as plt
 import pandas as pd
-from typing import Dict, Tuple
 
 import logging
 
 logging.basicConfig(level=logging.INFO)
 
-from cfm_config import config
+from cfm_config import config, sites
 
 if __name__ == "__main__":
-    borehole_sites: Dict[str, Tuple[float, float]] = config["borehole_sites"]
-    mar_data_dict: Dict[str, pd.DataFrame] = {}
-    racmo_data_dict: Dict[str, pd.DataFrame] = {}
+    borehole_sites = sites()
+    mar_data_dict: dict[str, pd.DataFrame] = {}
+    racmo_data_dict: dict[str, pd.DataFrame] = {}
 
-    for site, (lat, lon) in borehole_sites.items():
+    for site, info in borehole_sites.items():
+        lat, lon = info.lat, info.lon
         # Load MAR data for this site
         mar_data_path = (
             f"{config['CFM_data_path']}/cfm_input/MAR_{lat}_{lon}_{config['start_year']}_{config['end_year']}.csv"

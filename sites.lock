@@ -1,0 +1,15 @@
+# The name and coordinates of each site in sites.yaml (FEAT-002). Do not edit or remove an entry.
+# tests/test_sites.py fails if sites.yaml has a different lat or lon for a site in this file, or no entry for it.
+# Add each new site here in the same commit as its entry in sites.yaml.
+CI-0: [-66.403, -63.376]
+CI-22: [-66.588, -63.212]
+CI-120: [-67.000, -61.486]
+WI-0: [-67.444, -64.953]
+WI-70: [-67.500, -63.336]
+J108: [-67.108, -61.287]
+J208: [-68.300, -64.149]
+J409: [-68.395, -64.713]
+J109: [-68.395, -64.710]
+Y208: [-67.564, -63.257]
+JP21: [-68.0086, -64.3668]
+SI47: [-68.0408, -64.3236]
