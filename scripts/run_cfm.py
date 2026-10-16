@@ -11,8 +11,7 @@ Usage:
     python run_cfm.py --site <site name in sites.yaml> --physrho <physrho_value> --rcm <rcm_name> --liquid <liquid>
     python run_cfm.py ... --force    # rerun even if a complete run exists
 
-Give all four arguments, or none: then all come from config.yaml (default_site, cfm_config.physRho, rcm_name,
-cfm_config.liquid).
+Each argument that is not given comes from config.yaml (default_site, cfm_config.physRho, rcm_name, cfm_config.liquid).
 To run at a new location, add it to sites.yaml and sites.lock first.
 
 """
@@ -36,19 +35,11 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    if args.site is not None and args.physrho is not None and args.rcm is not None and args.liquid is not None:
-        site = get_site(args.site)
-        physRho = args.physrho
-        rcm_name = args.rcm
-        liquid = args.liquid
-        logging.info("Using command line arguments")
-    else:
-        site = get_site(config["default_site"])
-        rcm_name = config["rcm_name"]
-        physRho = config["cfm_config"]["physRho"]
-        liquid = config["cfm_config"]["liquid"]
-        logging.info("Using site, physrho, rcm and liquid from config.yaml")
+    site = get_site(args.site or config["default_site"])
     borehole_lat, borehole_lon = site.lat, site.lon
+    physRho = args.physrho or config["cfm_config"]["physRho"]
+    rcm_name = args.rcm or config["rcm_name"]
+    liquid = args.liquid or config["cfm_config"]["liquid"]
     logging.info(
         f"Site {site.name} (lat={borehole_lat}, lon={borehole_lon}), physrho={physRho}, rcm={rcm_name}, liquid={liquid}"
     )
