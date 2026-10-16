@@ -32,6 +32,11 @@ if _moved:
         f"config.yaml contains {', '.join(_moved)}. The sites and batches are now in sites.yaml (FEAT-002). "
         "Delete these keys from config.yaml."
     )
+if "borehole_lat" in config or "borehole_lon" in config:
+    raise KeyError(
+        "config.yaml contains borehole_lat/borehole_lon. Replace them with default_site: <a site name in sites.yaml> "
+        "(FEAT-002)."
+    )
 
 
 def format_coord(value: float) -> str:

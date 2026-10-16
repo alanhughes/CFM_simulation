@@ -8,8 +8,12 @@ location specified in config file. Also saves the CFM configuration used for the
 
 Usage:
     python run_cfm.py
-    python run_cfm.py --lat <latitude> --lon <longitude> --physrho <physrho_value> -rcm <rcm_name>
+    python run_cfm.py --site <site name in sites.yaml> --physrho <physrho_value> --rcm <rcm_name> --liquid <liquid>
     python run_cfm.py ... --force    # rerun even if a complete run exists
+
+Give all four arguments, or none: then all come from config.yaml (default_site, cfm_config.physRho, rcm_name,
+cfm_config.liquid).
+To run at a new location, add it to sites.yaml and sites.lock first.
 
 """
 
@@ -20,12 +24,11 @@ import logging
 
 logging.basicConfig(level=logging.INFO)
 
-from cfm_config import config
+from cfm_config import config, get_site
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run CFM simulation with optional command line arguments")
-    parser.add_argument("--lat", type=float, help="Borehole latitude")
-    parser.add_argument("--lon", type=float, help="Borehole longitude")
+    parser.add_argument("--site", type=str, help="Site name in sites.yaml (default: default_site in config.yaml)")
     parser.add_argument("--physrho", type=str, help="Physical densification scheme")
     parser.add_argument("--rcm", type=str, help="RCM name to use for forcing data (e.g., MAR or RACMO)")
     parser.add_argument("--liquid", type=str, help="Meltwater scheme to use (currently only bucket)")
@@ -33,28 +36,22 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    if (
-        args.lat is not None
-        and args.lon is not None
-        and args.physrho is not None
-        and args.rcm is not None
-        and args.liquid is not None
-    ):
-        borehole_lat = args.lat
-        borehole_lon = args.lon
+    if args.site is not None and args.physrho is not None and args.rcm is not None and args.liquid is not None:
+        site = get_site(args.site)
         physRho = args.physrho
         rcm_name = args.rcm
         liquid = args.liquid
-        logging.info(
-            f"Using command line arguments: lat={borehole_lat}, lon={borehole_lon}, physrho={physRho}, rcm={rcm_name}, liquid={liquid}"
-        )
+        logging.info("Using command line arguments")
     else:
-        borehole_lat = config["borehole_lat"]
-        borehole_lon = config["borehole_lon"]
+        site = get_site(config["default_site"])
         rcm_name = config["rcm_name"]
         physRho = config["cfm_config"]["physRho"]
         liquid = config["cfm_config"]["liquid"]
-        logging.info("Using borehole location and physrho from config.yaml")
+        logging.info("Using site, physrho, rcm and liquid from config.yaml")
+    borehole_lat, borehole_lon = site.lat, site.lon
+    logging.info(
+        f"Site {site.name} (lat={borehole_lat}, lon={borehole_lon}), physrho={physRho}, rcm={rcm_name}, liquid={liquid}"
+    )
 
     if rcm_name == "MAR":
         ProcessMAR(borehole_lat, borehole_lon).process()

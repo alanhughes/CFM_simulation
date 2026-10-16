@@ -33,9 +33,8 @@ force_data_save_path_pattern: "{CFM_data_path}/cfm_input/{rcm_name}_{borehole_la
 start_year: 1979
 end_year: 2024
 
-# Borehole location - this is the location at which cfm will be run if no arguments are passed
-borehole_lat: -66.403
-borehole_lon: -63.376
+# Site (a name in sites.yaml) at which scripts/run_cfm.py runs the CFM if no --site argument is passed
+default_site: CI-0
 
 # The sites (borehole locations with in situ measurements) and the batches are in sites.yaml (FEAT-002)
 

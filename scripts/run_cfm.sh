@@ -1,16 +1,14 @@
 #!/bin/bash
 
-# this script runs the run_cfm.py script for all combinations of lat/lon, physrho, and RCM values. You have the option
+# this script runs the run_cfm.py script for all combinations of site, physrho, and RCM values. You have the option
 # to change the liquid scheme (e.g. to something other than "bucked") but currently they don't seem to be working in the
 # CFM. I've let Max Stevens (maxstev@umd.edu) know about this and he said he would look into it.
 
-# Define arrays of latitude/longitude pairs (same index = same location)
-# LATITUDES=(-66.403 -66.588 -67.000 -67.444 -67.500)
-# LONGITUDES=(-63.376 -63.212 -61.486 -64.953 -63.336)
-# LATITUDES=(-67.10815 -68.30038 -68.39473 -68.39467 -67.56443)
-# LONGITUDES=(-61.28748 -64.14850 -64.71308 -64.71017 -63.25733)
-LATITUDES=(-68.0086 -68.0408)
-LONGITUDES=(-64.3668 -64.3236)
+# Site names in sites.yaml. The coordinates come from sites.yaml.
+# To use a batch of sites.yaml: mapfile -t SITES < <(python scripts/list_sites.py --batch batch_1)
+# SITES=(CI-0 CI-22 CI-120 WI-0 WI-70)
+# SITES=(J108 J208 J409 J109 Y208)
+SITES=(JP21 SI47)
 PHYSRHO_VALUES=("GSFC2020" "HLdynamic" "Crocus" "Barnola1991" "Ligtenberg2011")
 RCM_VALUES=("RACMO" "MAR")
 LIQUID_VALUE="bucket"
@@ -35,38 +33,34 @@ exec > >(tee "$LOG_DIR/run_cfm_summary_${TIMESTAMP}.log") 2>&1
 
 # Function to run a single CFM simulation
 run_cfm_job() {
-    local lat=$1
-    local lon=$2
-    local physrho=$3
-    local rcm=$4
+    local site=$1
+    local physrho=$2
+    local rcm=$3
 
-    local log_file="$LOG_DIR/cfm_lat${lat}_lon${lon}_${physrho}_${rcm}_${TIMESTAMP}.log"
+    local log_file="$LOG_DIR/cfm_${site}_${physrho}_${rcm}_${TIMESTAMP}.log"
 
-    echo "Running CFM for lat=$lat, lon=$lon, physrho=$physrho, rcm=$rcm (logging to $log_file)"
+    echo "Running CFM for site=$site, physrho=$physrho, rcm=$rcm (logging to $log_file)"
 
     if python "${SCRIPT_DIR}/run_cfm.py" \
-        --lat "$lat" \
-        --lon "$lon" \
+        --site "$site" \
         --physrho "$physrho" \
         --rcm "$rcm" \
         --liquid "$LIQUID_VALUE" \
         > "$log_file" 2>&1; then
-        echo "SUCCESS: lat=$lat, lon=$lon, physrho=$physrho, rcm=$rcm"
+        echo "SUCCESS: site=$site, physrho=$physrho, rcm=$rcm"
         ((SUCCESSFUL_RUNS++))
     else
-        echo "FAILED: lat=$lat, lon=$lon, physrho=$physrho, rcm=$rcm"
+        echo "FAILED: site=$site, physrho=$physrho, rcm=$rcm"
         ((FAILED_RUNS++))
     fi
 }
 
-# loop over all latitude/longitude pairs and physrho values
-for i in "${!LATITUDES[@]}"; do
-    LAT=${LATITUDES[$i]}
-    LON=${LONGITUDES[$i]}
+# loop over all sites and physrho values
+for SITE in "${SITES[@]}"; do
     for PHYSRHO in "${PHYSRHO_VALUES[@]}"; do
         for RCM in "${RCM_VALUES[@]}"; do
             ((TOTAL_RUNS++))
-            run_cfm_job "$LAT" "$LON" "$PHYSRHO" "$RCM" || true
+            run_cfm_job "$SITE" "$PHYSRHO" "$RCM" || true
         done
     done
 done
