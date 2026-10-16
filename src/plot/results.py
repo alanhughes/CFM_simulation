@@ -6,7 +6,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
 
-from cfm_config import cfm_version, config
+from cfm_config import cfm_version, config, sites
+from force.model_point import model_point_label, shared_model_points
 from sim.runs import find_run
 
 logging.basicConfig(level=logging.INFO)
@@ -52,6 +53,11 @@ class ResultsPlotter:
         ]
         self._figure_path: str = f"{config['CFM_data_path']}/cfm_figures/figures_{site}_{config['start_year']}_{config['end_year']}_{phys_rho_str}_{self.liquid}_{self.rcm_name}_{self.cfm}"
         os.makedirs(self._figure_path, exist_ok=True)
+
+        # model point of the site and the other sites in its cell; also the inactive sites, as in the other plots (FEAT-002)
+        self._model_point_label: str = model_point_label(
+            site, shared_model_points(sites(active_only=False), rcm_name)
+        )
 
         self._thickness_change_range: List[float] = config[
             "thickness_change_range"
@@ -112,6 +118,7 @@ class ResultsPlotter:
                 )
             plt.xlabel("Density (kg/m^3)")
             plt.ylabel("Depth (m)")
+            plt.title(f"{phys_rho} density profiles\n{self._model_point_label}")
             plt.grid()
             plt.gca().invert_yaxis()  # Invert y-axis to have depth increasing downwards
             plt.savefig(f"{self._figure_path}/{phys_rho}_density_profile.png")
@@ -129,7 +136,7 @@ class ResultsPlotter:
             )
         plt.xlabel("Model Time (years)")
         plt.ylabel("DIP (m)")
-        plt.title("DIP Time Series")
+        plt.title(f"DIP Time Series\n{self._model_point_label}")
         plt.legend()
         plt.grid()
         plt.savefig(f"{self._figure_path}/DIP_time_series.png")
@@ -158,7 +165,7 @@ class ResultsPlotter:
         plt.xlim(self._thickness_change_range)  # Set x-axis limits to the specified range
         plt.xlabel("Model Time (years)")
         plt.ylabel("Change in Firn Thickness (m)")
-        plt.title("Change in Firn Thickness over Time")
+        plt.title(f"Change in Firn Thickness over Time\n{self._model_point_label}")
         plt.grid()
         plt.legend()
         plt.savefig(f"{self._figure_path}/firn_thickness_change.png")
