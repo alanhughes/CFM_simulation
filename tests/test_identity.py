@@ -115,3 +115,12 @@ def test_second_cfm_in_one_process_is_refused(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, "firn_density_nospin", loaded)
     with pytest.raises(RuntimeError, match="already imported the CFM"):
         import_cfm(str(tmp_path / "two"))
+
+
+def test_pip_freeze_ignores_pythonpath(cfm_repo, tmp_path, monkeypatch):
+    """A stale egg-info with bad metadata on PYTHONPATH (as in src/ of an old checkout) must not break pip freeze."""
+    bad = tmp_path / "src" / "cfm.egg-info"
+    bad.mkdir(parents=True)
+    (bad / "requires.txt").write_text("numpy\n")  # no PKG-INFO, so no version
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path / "src"))
+    assert identity(cfm_repo)["pip_freeze"]
