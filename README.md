@@ -160,9 +160,9 @@ Forcing is extracted once per model point, into a cache shared by all CFM versio
 
 `forcing_data_path` defaults to `{CFM_data_path}/forcing`. `<release>` comes from the RCM file names, so a new data release gets new forcing. Old `cfm_input/` CSVs can be checked against the cache layout with `python scripts/migrate_forcing_csvs.py --dry-run <cfm_input folder>` (it only prints a plan).
 
-#### Fast RACMO extraction
+#### Fast forcing extraction
 
-The `RACMO` and `RACMO23` forcing is extracted with `h5py` in one parallel pass over the files (`src/force/extract.py`). Each HDF5 chunk is a full daily map, so any method must read all the bytes (66 GB for `RACMO`, 47 GB for `RACMO23`). One pass takes approximately 5 minutes, and `forcing_processes` (default 8) sets the number of worker processes. The first pass also keeps all grid cells in a box around the active sites in `sites.yaml` in a local `cache.h5` (next to the forcing CSVs; `forcing_cache`, `forcing_cache_dir` and `forcing_cache_margin` in `config.example.yaml`). A later site inside the box then takes under one second. `python scripts/extract_forcing.py` makes the forcing for all active sites in one pass. MAR uses the older xarray code.
+The `RACMO`, `RACMO23` and `MAR` forcing is extracted with `h5py` in one parallel pass over the files (`src/force/extract.py`). Each HDF5 chunk is a full daily map, so any method must read all the bytes (66 GB for `RACMO`, 47 GB for `RACMO23`, 24 GB for `MAR` 1979-2024). One pass takes approximately 1.5 minutes (`MAR`) to 5 minutes, and `forcing_processes` (default 8) sets the number of worker processes. The first pass also keeps all grid cells in a box around the active sites in `sites.yaml` in a local `cache.h5` (next to the forcing CSVs; `forcing_cache`, `forcing_cache_dir` and `forcing_cache_margin` in `config.example.yaml`). A later site inside the box then takes under one second. `python scripts/extract_forcing.py` makes the forcing for all active sites in one pass (`--rcm MAR` for MAR). For `MAR`, the extraction keeps `SECTOR` = `sector` and the surface layer (`OUTLAY` = 0), as the old code did.
 
 ## Sanity check
 
