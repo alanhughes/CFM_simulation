@@ -1,7 +1,12 @@
 """Plan the move of old forcing CSVs (cfm_input/<rcm>_<lat>_<lon>_<start>_<end>.csv) into the forcing cache (FEAT-002).
 
-DRY RUN ONLY: this script reads the old CSVs and the RCM coordinate arrays, and prints what it would do. It does not
-copy, move or write any file. The copy step is not written yet.
+The default is a dry run: the script reads the old CSVs and the RCM coordinate arrays, and prints what it would do.
+It does not write any file.
+
+With --copy the script copies each CSV with the action COPY into the cache and writes the JSON file next to it. It
+never moves or deletes a source file. It never copies a CSV with the action SKIP. It stops before any copy if the plan
+has a CONFLICT (a different file is already in the cache, or different CSVs go to one cache file). It writes each file
+to a temporary name and then renames it.
 
 For each old CSV, the script:
 1. Finds the site in sites.yaml with the same coordinates.
@@ -17,13 +22,18 @@ For each old CSV, the script:
    (RACMO and RACMO23 only; reads one variable at one point from the share).
 
 Usage:
-    python scripts/migrate_forcing_csvs.py --dry-run <cfm_input folder> [<cfm_input folder> ...] [--verify]
+    python scripts/migrate_forcing_csvs.py [--dry-run] <cfm_input folder> [<cfm_input folder> ...] [--verify]
+    python scripts/migrate_forcing_csvs.py --copy <cfm_input folder> [<cfm_input folder> ...]
 """
 
 import argparse
+import datetime
 import glob
+import json
 import os
 import re
+import shutil
+import socket
 import sys
 from collections import defaultdict
 from dataclasses import dataclass
@@ -34,7 +44,7 @@ import pandas as pd
 import xarray as xr
 
 from cfm_config import sites
-from force.cache import ForcingCoverageError, check_date_coverage, forcing_csv_path, sha256_file
+from force.cache import ForcingCoverageError, check_date_coverage, forcing_csv_path, forcing_json_path, sha256_file
 from force.model_point import ModelPoint, _grid, model_point_at, rcm_data_path
 
 OLD_NAME = re.compile(
@@ -142,24 +152,8 @@ def plan_csv(path: str, site_by_coords: dict, verify: bool) -> Optional[Plan]:
     return plan
 
 
-def main(argv: List[str]) -> int:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("folders", nargs="+", help="Folders with old forcing CSVs (cfm_input/)")
-    parser.add_argument("--dry-run", action="store_true", required=True, help="Required: only print the plan")
-    parser.add_argument("--verify", action="store_true", help="Compare T2m with the RCM data (reads the share)")
-    args = parser.parse_args(argv)
-
-    site_by_coords = {(site.lat, site.lon): name for name, site in sites(active_only=False).items()}
-    plans = []
-    for folder in args.folders:
-        for path in sorted(glob.glob(os.path.join(folder, "*.csv"))):
-            plan = plan_csv(path, site_by_coords, args.verify)
-            if plan is None:
-                print(f"IGNORE   {path} (name does not match <rcm>_<lat>_<lon>_<start>_<end>.csv)")
-            else:
-                plans.append(plan)
-
-    # group the copies by target: identical files give one copy, different files are a conflict
+def group_plans(plans: List[Plan]) -> None:
+    """Group the copies by target: identical files give one copy, different files are a conflict."""
     by_target = defaultdict(list)
     for plan in plans:
         if plan.target:
@@ -183,7 +177,114 @@ def main(argv: List[str]) -> int:
                         "already in the cache" if same else "a different file is already in the cache"
                     )
 
-    print("DRY RUN: no file is copied, moved or written.\n")
+
+def build_plans(folders: List[str], verify: bool) -> List[Plan]:
+    site_by_coords = {(site.lat, site.lon): name for name, site in sites(active_only=False).items()}
+    plans = []
+    for folder in folders:
+        for path in sorted(glob.glob(os.path.join(folder, "*.csv"))):
+            plan = plan_csv(path, site_by_coords, verify)
+            if plan is None:
+                print(f"IGNORE   {path} (name does not match <rcm>_<lat>_<lon>_<start>_<end>.csv)")
+            else:
+                plans.append(plan)
+    group_plans(plans)
+    return plans
+
+
+def cache_years(target: str) -> tuple:
+    """(start_year, end_year) from the name <i>_<j>_<start>_<end>.csv."""
+    _, _, start, end = os.path.splitext(os.path.basename(target))[0].split("_")
+    return int(start), int(end)
+
+
+def _write_atomic(path: str, write) -> None:
+    """Call write(temporary_path), then rename the temporary file to path."""
+    tmp = f"{path}.tmp{os.getpid()}"
+    try:
+        write(tmp)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+
+def copy_plan(plan: Plan) -> None:
+    """Copy one CSV into the cache and write the JSON file next to it. The source file is not changed."""
+    mp, target = plan.model_point, plan.target
+    if os.path.exists(target) and sha256_file(target) != plan.sha256:
+        raise RuntimeError(f"{target}: a different file is already in the cache; not overwritten")
+    start, end = cache_years(target)
+    df = pd.read_csv(plan.source, index_col=0, parse_dates=True)
+    site_lat, site_lon = (float(x) for x in OLD_NAME.match(os.path.basename(plan.source)).group("lat", "lon"))
+    record = {
+        "model_point": {
+            "rcm_name": mp.rcm_name,
+            "release": mp.release,
+            "i": mp.i,
+            "j": mp.j,
+            "cell_lat": mp.cell_lat,
+            "cell_lon": mp.cell_lon,
+            "method": mp.method,
+            "tag": mp.tag,
+        },
+        "requested_location": {"lat": site_lat, "lon": site_lon, "distance_km": mp.distance_km},
+        "start_year": start,
+        "end_year": end,
+        "first_date": str(pd.Timestamp(df.index.min())),
+        "last_date": str(pd.Timestamp(df.index.max())),
+        "n_rows": int(len(df)),
+        "columns": list(df.columns),
+        "data_path": rcm_data_path(mp.rcm_name),
+        "sha256": plan.sha256,
+        "csv_sha256": plan.sha256,
+        "migrated_from": {"file": plan.source, "site": plan.site, "old_cell": list(plan.old_cell)},
+        "created": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
+        "host": socket.gethostname(),
+    }
+
+    def write_json(tmp):
+        with open(tmp, "w") as file:
+            json.dump(record, file, indent=2)
+            file.write("\n")
+
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    _write_atomic(target, lambda tmp: shutil.copyfile(plan.source, tmp))
+    if sha256_file(target) != plan.sha256:
+        os.remove(target)
+        raise RuntimeError(f"{target}: the copy has a different SHA-256 from the source; the copy is removed")
+    _write_atomic(forcing_json_path(target), write_json)
+
+
+def copy_all(plans: List[Plan]) -> int:
+    """Copy the plans with the action COPY. Stop before any copy if the plan has a CONFLICT."""
+    conflicts = [plan for plan in plans if plan.action == "CONFLICT"]
+    if conflicts:
+        for plan in conflicts:
+            print(f"ERROR: CONFLICT {plan.source}: {plan.note}", file=sys.stderr)
+        print("Nothing is copied.", file=sys.stderr)
+        return 1
+    copied = 0
+    for plan in plans:
+        if plan.action == "COPY":
+            copy_plan(plan)
+            copied += 1
+            print(f"COPIED   {plan.source} -> {plan.target}")
+    print(f"Copied {copied} CSVs. No source file is moved or deleted.")
+    return 0
+
+
+def main(argv: List[str]) -> int:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("folders", nargs="+", help="Folders with old forcing CSVs (cfm_input/)")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--dry-run", action="store_true", help="Only print the plan (the default)")
+    mode.add_argument("--copy", action="store_true", help="Copy the CSVs with the action COPY into the cache")
+    parser.add_argument("--verify", action="store_true", help="Compare T2m with the RCM data (reads the share)")
+    args = parser.parse_args(argv)
+
+    plans = build_plans(args.folders, args.verify)
+    print("COPY MODE\n" if args.copy else "DRY RUN: no file is copied, moved or written.\n")
     for plan in plans:
         mp = plan.model_point
         print(f"{plan.action:9s} {plan.source}")
@@ -199,7 +300,7 @@ def main(argv: List[str]) -> int:
     for plan in plans:
         counts[plan.action] += 1
     print("\nSummary: " + ", ".join(f"{action} {n}" for action, n in sorted(counts.items())))
-    return 0
+    return copy_all(plans) if args.copy else 0
 
 
 if __name__ == "__main__":
