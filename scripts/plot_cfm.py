@@ -16,6 +16,11 @@ from plot.results import ResultsPlotter
 
 logging.basicConfig(level=logging.INFO)
 
+
+def default_phys_rho(cfm_config: dict) -> list:
+    """The densification schemes to plot when no argument is given: the one scheme in cfm_config.physRho (BUG-201)."""
+    return [cfm_config["physRho"]]
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run CFM plotting with optional command line arguments")
     parser.add_argument("--site", type=str, help="Site name in sites.yaml")
@@ -52,7 +57,7 @@ if __name__ == "__main__":
         liquid = args.liquid
     else:
         site = get_site(config["default_site"])
-        phys_rho = list(config["cfm_config"]["physRho"])
+        phys_rho = default_phys_rho(config["cfm_config"])
         rcm_name = config["rcm_name"]
         liquid = config["cfm_config"]["liquid"]
         logging.info("Using borehole location and physrho from config.yaml")
