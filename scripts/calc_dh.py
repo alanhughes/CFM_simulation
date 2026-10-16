@@ -1,15 +1,22 @@
 """Script to calculate the rate of change of ice thickness (dh/dt) from the CFM output data and plot it over time for
 different physical density options. The script reads the output data from NetCDF files, extracts the relevant variables,
-and creates time series plots of dh/dt for each physical density option. These are saved to csv files
+and creates time series plots of dh/dt for each physical density option. Sites, RCM, melt scheme and period are taken
+from config.yaml. The time series are saved to csv files, and the plots and csvs are written to
+{CFM_data_path}/cfm_figures/dh_dt
 
 Usage:
     - python calc_dh.py
 
 """
 
+import os
+from typing import Dict, Tuple
+
 import xarray as xr
 import pandas as pd
 import matplotlib.pyplot as plt
+
+from cfm_config import cfm_output_folder, config
 
 
 def read_output_data(file_path):
@@ -41,24 +48,30 @@ def read_output_data(file_path):
 
 
 if __name__ == "__main__":
-    lat_lon_pairs = [
-        ("-66.403", "-63.376"),
-        ("-66.588", "-63.212"),
-        ("-67.000", "-61.486"),
-        ("-67.444", "-64.953"),
-        ("-67.500", "-63.336"),
-    ]
-
+    borehole_sites: Dict[str, Tuple[float, float]] = config["borehole_sites"]
     phys_rho_options = ("GSFC2020", "HLdynamic", "Crocus", "Barnola1991", "Ligtenberg2011")
+    start, end = config["start_year"], config["end_year"]
+    rcm_name = config["rcm_name"]
+    liquid = config["cfm_config"]["liquid"]
 
-    for lat, lon in lat_lon_pairs:
-        input_path = f"/home/speersm/luna/CPOM/speersm/CFM_data/cfm_input/MAR_{float(lat)}_{float(lon)}_1979_2024.csv"
+    save_dir = f"{config['CFM_data_path']}/cfm_figures/dh_dt"
+    os.makedirs(save_dir, exist_ok=True)
+
+    for site, (lat, lon) in borehole_sites.items():
+        input_path = config["force_data_save_path_pattern"].format(
+            CFM_data_path=config["CFM_data_path"],
+            rcm_name=rcm_name,
+            borehole_lat=lat,
+            borehole_lon=lon,
+            start_year=start,
+            end_year=end,
+        )
         input_df = pd.read_csv(input_path, parse_dates=["TIME"])
         input_df = input_df[input_df["TIME"] >= pd.Timestamp("1980-01-01")]
 
         plt.figure(figsize=(10, 6))
         for phys_rho in phys_rho_options:
-            output_path = f"/home/speersm/luna/CPOM/speersm/CFM_data/cfm_output/CFMoutput_{lat}_{lon}_1979_2024_{phys_rho}_bucket_MAR/CFMresults.hdf5"
+            output_path = f"{cfm_output_folder(lat, lon, phys_rho, liquid, rcm_name)}/CFMresults.hdf5"
             results_dict = read_output_data(output_path)
 
             # Align lengths so time and DIP-derived series are paired safely.
@@ -69,11 +82,12 @@ if __name__ == "__main__":
 
             # save
             output_df = pd.DataFrame({"TIME": input_df["TIME"], "dh_dt": dH_step})
-            output_df.to_csv(f"dh_dt_time_series_{lat}_{lon}_{phys_rho}.csv", index=False)
+            output_df.to_csv(f"{save_dir}/dh_dt_time_series_{site}_{phys_rho}_{liquid}_{rcm_name}.csv", index=False)
 
         plt.xlabel("Time")
         plt.ylabel("dh/dt (m/day)")
-        plt.title("Rate of change of ice thickness (dh/dt) over time")
+        plt.title(f"Rate of change of ice thickness (dh/dt) over time at {site}")
         plt.legend()
         plt.grid()
-        plt.savefig(f"dh_dt_time_series_{lat}_{lon}.png", dpi=300)
+        plt.savefig(f"{save_dir}/dh_dt_time_series_{site}_{liquid}_{rcm_name}.png", dpi=300)
+        plt.close()

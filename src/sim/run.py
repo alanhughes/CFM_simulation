@@ -5,11 +5,9 @@ import sys
 
 import numpy as np
 import pandas as pd
-import yaml
 from typing import Literal
 
-with open("config.yaml", "r") as file:
-    config = yaml.safe_load(file)
+from cfm_config import cfm_output_folder, config, run_id
 
 logging.basicConfig(level=logging.INFO)
 
@@ -60,15 +58,13 @@ class CFMRun:
         self._cfm_config["liquid"] = liquid
 
         # set json config name
-        self._json_config_name = f"CFMconfig_{self._borehole_lat}_{self._borehole_lon}_{config['start_year']}_{config['end_year']}_{self._cfm_config['physRho']}_{self._cfm_config['liquid']}_{self._rcm_name}.json"
+        self._json_config_name = f"CFMconfig_{run_id(borehole_lat, borehole_lon, physRho, liquid, rcm_name)}.json"
 
         # flag to indicate if output folder exists
         self._output_exists: bool = False
 
         # set output folder in config
-        self._cfm_config["resultsFolder"] = (
-            f"{self._cfm_output_path}/CFMoutput_{self._borehole_lat}_{self._borehole_lon}_{config['start_year']}_{config['end_year']}_{self._cfm_config['physRho']}_{self._cfm_config['liquid']}_{self._rcm_name}"
-        )
+        self._cfm_config["resultsFolder"] = cfm_output_folder(borehole_lat, borehole_lon, physRho, liquid, rcm_name)
 
         if not os.path.exists(self._cfm_config["resultsFolder"]):
             os.makedirs(self._cfm_config["resultsFolder"])

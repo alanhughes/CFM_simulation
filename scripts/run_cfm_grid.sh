@@ -38,10 +38,18 @@ RCM=${RCM_VALUES[$RCM_INDEX]}
 # ---------------------------------------------------------------------------
 # Environment
 # ---------------------------------------------------------------------------
+# Override with e.g. `CFM_CONDA_ENV=CFM3.10.11 sbatch scripts/run_cfm_grid.sh`
 source "$(conda info --base)/etc/profile.d/conda.sh"
-conda activate CFM3.10.11
+conda activate "${CFM_CONDA_ENV:-cfm}"
 
-cd /home/speersm/luna/CPOM/speersm/CFM_simulation
+# SLURM runs a spooled copy of this script, so locate the repo from the submit directory
+# (submit from the repo root) unless CFM_SIM_ROOT is set
+REPO_ROOT="${CFM_SIM_ROOT:-${SLURM_SUBMIT_DIR:-$(pwd)}}"
+if [[ ! -f "${REPO_ROOT}/config.yaml" ]]; then
+    echo "config.yaml not found in ${REPO_ROOT}; submit from the repo root or set CFM_SIM_ROOT" >&2
+    exit 1
+fi
+cd "$REPO_ROOT"
 
 # ---------------------------------------------------------------------------
 # Run

@@ -1,9 +1,0 @@
-Metadata-Version: 2.4
-Name: cfm
-Version: 0.1.0
-Summary: Community firn model simulation with forcing data processing and gridded simulation.
-Requires-Python: >=3.10
-Description-Content-Type: text/markdown
-
-# CFM_simulation
-Column and grid simulation from the Community Firn Model (CFM). Relies on functionality from the CFM repository https://github.com/UWGlaciology/CommunityFirnModel.

@@ -8,10 +8,8 @@ Usage:
 
 from plot import plot_larsen_c_melt
 from typing import Dict, Tuple
-import yaml
 
-with open("config.yaml", "r") as f:
-    config = yaml.safe_load(f)
+from cfm_config import config
 
 if __name__ == "__main__":
     borehole_sites: Dict[str, Tuple[float, float]] = config["borehole_sites"]

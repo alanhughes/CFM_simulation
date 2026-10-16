@@ -25,12 +25,11 @@ import xarray as xr
 import pandas as pd
 import numpy as np
 import logging
+import os
 
-import yaml
+from cfm_config import cfm_output_folder, config
 
 logging.basicConfig(level=logging.INFO)
-with open("config.yaml", "r") as f:
-    config = yaml.safe_load(f)
 
 if __name__ == "__main__":
     borehole_sites: Dict[str, Tuple[float, float]] = config["borehole_sites"]
@@ -41,13 +40,15 @@ if __name__ == "__main__":
         "Barnola1991",
         "Ligtenberg2011",
     ]
-    start, end = config["start_year"], config["end_year"]
     rcm_name = config["rcm_name"]
     melt_scheme = config["cfm_config"]["liquid"]
 
     sites_batch_1 = config["sites_batch_1"]
     sites_batch_2 = config["sites_batch_2"]
     sites_batch_3 = config["sites_batch_3"]
+
+    save_dir = f"{config['CFM_data_path']}/cfm_figures/errors"
+    os.makedirs(save_dir, exist_ok=True)
 
     # period1 = [
     #     2009 + 11 / 12,
@@ -89,7 +90,7 @@ if __name__ == "__main__":
             ]
 
         # load in in situ density data for this site
-        in_situ_path = f"/home/speersm/luna/CPOM/speersm/in_situ/{site}_depth-density.csv"
+        in_situ_path = f"{config['in_situ_data_path']}/{site}_depth-density.csv"
         in_situ_data = pd.read_csv(in_situ_path)
         # put in situ data on same depth grid as model output
         in_situ_depth = pd.to_numeric(in_situ_data["Depth"].values)
@@ -98,8 +99,7 @@ if __name__ == "__main__":
         # plt.plot(in_situ_density, in_situ_depth, label="In situ", color="k", linewidth=1)
         for physrho in physrho_values:
             # load simulation
-            # round coordinates to 5 dp, then drop trailing zeros for cleaner paths
-            output_path = f"{config['CFM_data_path']}/cfm_output/CFMoutput_{lat:.3f}_{lon:.3f}_{start}_{end}_{physrho}_{melt_scheme}_{rcm_name}/CFMresults.hdf5"
+            output_path = f"{cfm_output_folder(lat, lon, physrho, melt_scheme, rcm_name)}/CFMresults.hdf5"
             with xr.open_dataset(output_path, engine="h5netcdf", phony_dims="sort") as ds:
                 results_dict = {
                     "model_time_matrix": ds["density"][1:, 0],
@@ -162,4 +162,4 @@ if __name__ == "__main__":
         plt.title(f"Density vs Depth for {site}")
         plt.legend()
         plt.grid()
-        plt.savefig(f"/home/speersm/luna/CPOM/speersm/CFM_data/cfm_figures/errors/{site}_{melt_scheme}_{rcm_name}.png")
+        plt.savefig(f"{save_dir}/{site}_{melt_scheme}_{rcm_name}.png")

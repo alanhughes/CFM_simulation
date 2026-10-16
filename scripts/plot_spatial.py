@@ -6,11 +6,9 @@ Usage:
 """
 
 from plot import SpatialPlotter
-import yaml
 import logging
 
-with open("config.yaml", "r") as f:
-    config = yaml.safe_load(f)
+from cfm_config import config
 
 logging.basicConfig(level=logging.INFO)
 

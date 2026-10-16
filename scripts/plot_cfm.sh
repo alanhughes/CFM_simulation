@@ -7,7 +7,11 @@
 
 # Create log file with timestamp
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LOG_DIR="${SCRIPT_DIR}/../logs"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+LOG_DIR="${REPO_ROOT}/logs"
+
+# python scripts open config.yaml relative to the working directory
+cd "$REPO_ROOT"
 mkdir -p "$LOG_DIR"
 LOG_FILE="${LOG_DIR}/plot_cfm_$(date +%Y%m%d_%H%M%S).log"
 
@@ -31,7 +35,7 @@ run_cfm_plot() {
     shift 2
     local physrho_values=("$@")
 
-    if python /home/speersm/luna/CPOM/speersm/CFM_simulation/scripts/plot_cfm.py \
+    if python "${SCRIPT_DIR}/plot_cfm.py" \
         --lat "$lat" \
         --lon "$lon" \
         --physrhols "${physrho_values[@]}" \
