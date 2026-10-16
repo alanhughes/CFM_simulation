@@ -20,6 +20,7 @@ import logging
 import multiprocessing
 import os
 import re
+import sys
 import time
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
@@ -302,9 +303,11 @@ def _read_file(job) -> Tuple[str, str, pd.DatetimeIndex, np.ndarray]:
 def _map_jobs(jobs: Sequence, processes: int) -> Iterable:
     if processes <= 1 or len(jobs) <= 1:
         return map(_read_file, jobs)
-    # forkserver: fork() from a parent with threads (BLAS, dask) can deadlock. The workers import force.extract,
-    # which reads config.yaml from the working directory, as every entry point of this repo does.
-    method = "forkserver" if "forkserver" in multiprocessing.get_all_start_methods() else "spawn"
+    # fork on Linux: the workers need no new imports, and a caller needs no `if __name__ == "__main__":` guard
+    # (spawn and forkserver import the main script again in each worker, so a script without the guard runs again).
+    # The parent holds no open HDF5 file at this point. Elsewhere (macOS, Windows) fork is not safe, so use spawn;
+    # there the calling script must have the guard.
+    method = "fork" if sys.platform.startswith("linux") else "spawn"
     executor = ProcessPoolExecutor(
         max_workers=min(processes, len(jobs)), mp_context=multiprocessing.get_context(method)
     )
