@@ -518,3 +518,35 @@ def test_process_fast_shared_cell_and_skip(cfg):
     assert list(frame.columns) == list(RACMO23_MAP.values()) and frame.index.name == "time"
     with pytest.raises(ValueError, match="one dataset"):
         extract.process_fast([ProcessRACMO(*SITE_A), ProcessRACMO23(*SITE_A)])
+
+
+def _load_extract_forcing_script():
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[1] / "scripts" / "extract_forcing.py"
+    spec = importlib.util.spec_from_file_location("extract_forcing_script", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_extract_forcing_script_years(cfg):
+    """--end-year replaces end_year of config.yaml: the CSV name and the date check use it (FEAT-002 step 8)."""
+    script = _load_extract_forcing_script()
+    script.main(["--rcm", "RACMO23", "--sites", "CI-0", "--no-cache", "--processes", "1", "--end-year", "1980"])
+    assert config["end_year"] == 1980
+    processor = ProcessRACMO23(*SITE_A)
+    folder = os.path.dirname(processor._save_path)
+    names = sorted(name for name in os.listdir(folder) if name.endswith(".csv"))
+    assert len(names) == 1 and names[0].endswith("_1979_1980.csv"), names
+    frame = pd.read_csv(os.path.join(folder, names[0]), index_col=0, parse_dates=True)
+    assert frame.index[0].year == 1979 and frame.index[-1].year == 1980
+    record = json.loads(open(os.path.join(folder, names[0][:-4] + ".json")).read())
+    assert record["start_year"] == 1979 and record["end_year"] == 1980
+
+
+def test_extract_forcing_script_years_out_of_order(cfg):
+    script = _load_extract_forcing_script()
+    with pytest.raises(SystemExit):
+        script.main(["--rcm", "RACMO23", "--sites", "CI-0", "--start-year", "1981", "--end-year", "1980"])
