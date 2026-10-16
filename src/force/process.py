@@ -119,27 +119,34 @@ class ProcessBase(ABC):
             self._input_dataframe = pd.concat(borehole_dataframes)
             logging.info("...borehole data processed successfully.")
 
-            check_date_coverage(self._input_dataframe.index, start_year, end_year, dataset)
+            self.save_forcing(save_path, self._input_dataframe, _source_files(self._daily_xr))
 
-            # write to a temporary name first, so that a stopped run leaves no CSV that looks complete
-            os.makedirs(os.path.dirname(save_path), exist_ok=True)
-            tmp_path = f"{save_path}.tmp"
-            self._input_dataframe.to_csv(tmp_path)
-            json_path = write_forcing_json(
-                tmp_path,
-                self.model_point,
-                self._input_dataframe,
-                source_files=_source_files(self._daily_xr),
-                column_map=config[self._map_name],
-                unit_factors=self._unit_factors,
-                start_year=start_year,
-                end_year=end_year,
-                site_lat=self._borehole_lat,
-                site_lon=self._borehole_lon,
-            )
-            os.replace(json_path, forcing_json_path(save_path))
-            os.replace(tmp_path, save_path)
-            logging.info(f"Borehole RCM data saved to {save_path}")
+    def save_forcing(self, save_path: str, df: pd.DataFrame, source_files: List[str], extra: Optional[dict] = None):
+        """Check the dates of the forcing data (BUG-003), then save it as a CSV with its JSON file."""
+        start_year, end_year = config["start_year"], config["end_year"]
+        dataset = f"{self._rcm_name} ({self.model_point.release})"
+        check_date_coverage(df.index, start_year, end_year, dataset)
+
+        # write to a temporary name first, so that a stopped run leaves no CSV that looks complete
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        tmp_path = f"{save_path}.tmp"
+        df.to_csv(tmp_path)
+        json_path = write_forcing_json(
+            tmp_path,
+            self.model_point,
+            df,
+            source_files=source_files,
+            column_map=config[self._map_name],
+            unit_factors=self._unit_factors,
+            start_year=start_year,
+            end_year=end_year,
+            site_lat=self._borehole_lat,
+            site_lon=self._borehole_lon,
+            extra=extra,
+        )
+        os.replace(json_path, forcing_json_path(save_path))
+        os.replace(tmp_path, save_path)
+        logging.info(f"Borehole RCM data saved to {save_path}")
 
     @staticmethod
     def _check_existing(save_path: str, start_year: int, end_year: int, dataset: str) -> None:
@@ -310,11 +317,11 @@ class ProcessRACMO(ProcessBase):
             xr.Dataset: RACMO data at the borehole location.
         """
 
-        if config.get("forcing_fast_extraction", False) and not os.path.exists(self._save_path):
-            # FEAT-003: h5py extraction in one parallel pass, through the local cache (see force/extract.py)
-            from .extract import write_forcing_csvs
+        if config.get("forcing_fast_extraction", False):
+            # FEAT-003: h5py extraction in one parallel pass, through the local cache around the sites
+            from .extract import process_fast
 
-            write_forcing_csvs(self._rcm_name, {self._save_path: (self._borehole_lat, self._borehole_lon)})
+            process_fast([self])
             return
 
         super().process(self._save_path)

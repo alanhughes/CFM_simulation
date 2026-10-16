@@ -9,8 +9,9 @@ and missing_value (to NaN), scale_factor and add_offset. The derived columns (ra
 the column maps follow ProcessRACMO._xr_to_input_dataframe (src/force/process.py) step by step, so the output agrees
 with the old CSVs.
 
-A local cache (cache.h5) keeps all cells in a box around the sites, so a new site near the others needs no new pass
-over the share. See ensure_cache().
+A local cache (cache.h5, next to the forcing CSVs of FEAT-002) keeps all cells in a box around the sites, so a new site
+near the others needs no new pass over the share. See ensure_cache(). process_fast() writes the forcing CSV of each
+model point through ProcessBase.save_forcing, so the CSVs and JSON files are the same as from the old path.
 """
 
 import glob
@@ -36,7 +37,7 @@ DEFAULT_PROCESSES = 8
 # old code (x * 60 * 60 * 24), which differ from x * 86400 by up to 1 unit in the last place.
 DEFAULT_UNIT_FACTORS = {"SUBLIM": [60, 60, 24], "RAIN": [60, 60, 24], "BDOT": [60, 60, 24], "SMELT": [60, 60, 24]}
 DEFAULT_CACHE_MARGIN = {"lat": 0.5, "lon": 1.0}  # degrees
-DEFAULT_CACHE_DIR = "{CFM_data_path}/forcing/{rcm_name}"
+DEFAULT_CACHE_DIR = "{forcing_data_path}/{rcm_name}/{release}"  # the folder of the FEAT-002 forcing CSVs
 CACHE_FILE_NAME = "cache.h5"
 # Cells per side of a cache chunk; each chunk holds the full time series. Measured 2026-10-16, XPEN055 cache of 1980
 # cells, one cell not in the page cache: 16 -> 2.0-2.6 s, 8 -> 0.4 s, 4 -> 0.3 s, 2 -> 0.08 s.
@@ -226,7 +227,7 @@ def _file_years(spec: DatasetSpec, path: str) -> Tuple[int, int]:
 def list_files(settings: ExtractSettings) -> Dict[str, List[str]]:
     """Source files for each variable, in time order, that overlap start_year..end_year.
 
-    Logs a warning for years in the range that no file covers (see BUG-003); the old code skips them silently too.
+    It does not check that the files cover all the years; see check_file_years().
     """
     spec = settings.spec
     files: Dict[str, List[str]] = {}
@@ -243,35 +244,28 @@ def list_files(settings: ExtractSettings) -> Dict[str, List[str]]:
                 f"No {settings.dataset} files for {var!r} in {settings.data_path} for "
                 f"{settings.start_year}-{settings.end_year}"
             )
-        missing = sorted(set(range(settings.start_year, settings.end_year + 1)) - years)
-        if missing:
-            logging.warning(f"{settings.dataset} {var}: no files for years {missing} (BUG-003)")
         files[var] = keep
     return files
+
+
+def check_file_years(settings: ExtractSettings, files: Mapping[str, Sequence[str]]) -> None:
+    """Stop with ForcingCoverageError before the long pass if the file names do not cover start_year..end_year for
+    every variable (BUG-003)."""
+    from .cache import check_date_coverage
+
+    for var, paths in files.items():
+        years = set()
+        for path in paths:
+            first, last = _file_years(settings.spec, path)
+            years.update(range(first, last + 1))
+        dates = [pd.Timestamp(year, month, 1) for year in sorted(years) for month in (1, 12)]
+        check_date_coverage(dates, settings.start_year, settings.end_year, f"{settings.dataset} {var}")
 
 
 def read_grid(path: str) -> Tuple[np.ndarray, np.ndarray]:
     """2D latitude and longitude (rlat, rlon) of a RACMO file."""
     with h5py.File(path, "r") as h5:
         return h5["lat"][:], h5["lon"][:]
-
-
-def nearest_cell(lat2d: np.ndarray, lon2d: np.ndarray, lat: float, lon: float) -> Tuple[int, int, float]:
-    """Grid cell (i, j, km) selected for (lat, lon) by the OLD rule, distance in degrees.
-
-    i is the row (rlat), j the column (rlon), km the great circle distance from the site to the cell centre.
-
-    TEMPORARY: this copies the cell selection of ProcessRACMO._xr_to_input_dataframe (src/force/process.py), including
-    BUG-002 (no cos(lat) factor on the longitude difference), so the fast path agrees with the old CSVs. FEAT-002
-    fixes BUG-002 in force.grid.nearest_cell, which has the same signature; use that function instead at the merge.
-    """
-    distance = np.sqrt(np.abs(lat2d - lat) ** 2 + np.abs(lon2d - lon) ** 2)
-    i, j = np.unravel_index(distance.argmin(), distance.shape)
-    phi1, phi2 = np.radians(lat), np.radians(lat2d[i, j])
-    dphi, dlmb = phi2 - phi1, np.radians(lon2d[i, j] - lon)
-    hav = np.sin(dphi / 2) ** 2 + np.cos(phi1) * np.cos(phi2) * np.sin(dlmb / 2) ** 2
-    km = 2 * 6371.0 * np.arcsin(np.sqrt(hav))
-    return int(i), int(j), float(km)
 
 
 # ----------------------------------------------------------------------------------------------------------------
@@ -444,13 +438,21 @@ def extract_points(
 # ----------------------------------------------------------------------------------------------------------------
 
 
-def cache_path(dataset: str, cfg: Optional[Mapping] = None) -> str:
-    """Path of cache.h5 for a dataset. The folder comes from forcing_cache_dir (placeholders: CFM_data_path,
-    rcm_name)."""
-    if cfg is None:
-        from cfm_config import config as cfg
-    folder = (cfg.get("forcing_cache_dir") or DEFAULT_CACHE_DIR).format(
-        CFM_data_path=cfg["CFM_data_path"], rcm_name=dataset
+def cache_path(dataset: str) -> str:
+    """Path of cache.h5 for a dataset: forcing_cache_dir/cache.h5, by default in the folder of the forcing CSVs,
+    {forcing_data_path}/<rcm_name>/<release>/ (FEAT-002). Placeholders: CFM_data_path, forcing_data_path, rcm_name,
+    release."""
+    from cfm_config import config
+
+    from .cache import forcing_root
+    from .model_point import rcm_release
+
+    template = config.get("forcing_cache_dir") or DEFAULT_CACHE_DIR
+    folder = template.format(
+        CFM_data_path=config["CFM_data_path"],
+        forcing_data_path=forcing_root(),
+        rcm_name=dataset,
+        release=rcm_release(dataset) if "{release}" in template else "",
     )
     return os.path.join(folder, CACHE_FILE_NAME)
 
@@ -660,65 +662,106 @@ def ensure_cache(
 # ----------------------------------------------------------------------------------------------------------------
 
 
-def forcing_for_sites(
+def forcing_for_cells(
     dataset: str,
-    sites: Mapping[str, Tuple[float, float]],
+    cells: Sequence[Cell],
     use_cache: Optional[bool] = None,
     cache_sites: Sequence[Tuple[float, float]] = (),
-    cfg: Optional[Mapping] = None,
+    files: Optional[Dict[str, List[str]]] = None,
     **overrides,
-) -> Dict[str, pd.DataFrame]:
-    """Forcing DataFrame for each site (name -> (lat, lon)), from one pass over the share or from the cache.
+) -> Tuple[Dict[Cell, pd.DataFrame], List[str]]:
+    """Forcing DataFrames for grid cells (i, j), from one pass over the share or from the cache.
 
     Args:
         dataset: "RACMO" or "RACMO23".
-        sites: the sites to return.
+        cells: (i, j) grid indices, for example from force.model_point.
         use_cache: use cache.h5; default from the forcing_cache key (true if not set).
-        cache_sites: more (lat, lon) points for the cache box, e.g. all borehole_sites, so later sites near them
-            need no pass over the share.
-        cfg: config dict; default config.yaml.
-    """
-    if cfg is None:
-        from cfm_config import config as cfg
-    settings = ExtractSettings.from_config(dataset, cfg, **overrides)
-    if use_cache is None:
-        use_cache = bool(cfg.get("forcing_cache", True))
-    files = list_files(settings)
-    grid = read_grid(next(iter(files.values()))[0])
-    site_cells = {}
-    for name, (lat, lon) in sites.items():
-        i, j, km = nearest_cell(grid[0], grid[1], lat, lon)
-        site_cells[name] = (i, j)
-        logging.info(f"{dataset} {name} ({lat}, {lon}): grid cell (rlat, rlon) = ({i}, {j}), {km:.1f} km away")
-    cells = list(site_cells.values())
+        cache_sites: (lat, lon) points for the cache box, for example all the sites, so later sites near them need no
+            pass over the share. The cells are always in the box.
+        files: the source files from list_files(); default: list them.
+        overrides: ExtractSettings fields, for example processes=4 or end_year=2023.
 
+    Returns:
+        The DataFrame of each cell, and the list of the source files.
+    """
+    from cfm_config import config
+
+    settings = ExtractSettings.from_config(dataset, **overrides)
+    if use_cache is None:
+        use_cache = bool(config.get("forcing_cache", True))
+    if files is None:
+        files = list_files(settings)
+    check_file_years(settings, files)
+    cells = [(int(i), int(j)) for i, j in cells]
     if use_cache:
-        path = cache_path(dataset, cfg)
-        margin = dict(cfg.get("forcing_cache_margin") or DEFAULT_CACHE_MARGIN)
-        box_sites = list(sites.values()) + [tuple(s) for s in cache_sites]
-        ensure_cache(settings, path, cells, box_sites, margin, files, grid)
+        path = cache_path(dataset)
+        margin = dict(config.get("forcing_cache_margin") or DEFAULT_CACHE_MARGIN)
+        ensure_cache(settings, path, cells, list(cache_sites), margin, files)
         frames = read_cache_points(path, cells)
     else:
         frames = _extract(settings, cells, files)
-    return {name: frames[cell] for name, cell in site_cells.items()}
+    return frames, [path for paths in files.values() for path in paths]
 
 
-def write_forcing_csvs(
-    dataset: str, targets: Mapping[str, Tuple[float, float]], overwrite: bool = False, **kwargs
+def process_fast(
+    processors: Sequence,
+    use_cache: Optional[bool] = None,
+    overwrite: bool = False,
+    cache_sites: Optional[Sequence[Tuple[float, float]]] = None,
+    **overrides,
 ) -> List[str]:
-    """Write one forcing CSV for each target (CSV path -> (lat, lon)) in one pass. Returns the paths written.
+    """Write the forcing CSV and JSON of each ProcessRACMO/ProcessRACMO23 in one pass. Returns the CSVs written.
 
-    Existing CSVs are skipped unless overwrite is true, as in ProcessBase.process. kwargs go to forcing_for_sites.
+    Existing CSVs are checked and skipped, as in ProcessBase.process, unless overwrite is true. Processors that share
+    a model point share one CSV. The cache box contains cache_sites (default: all active sites in sites.yaml) and the
+    locations of the processors.
     """
-    todo = {path: site for path, site in targets.items() if overwrite or not os.path.exists(path)}
-    for path in targets:
-        if path not in todo:
-            logging.info(f"Forcing CSV already exists at {path}. Skipping.")
+    from cfm_config import config, sites
+
+    datasets = {p._rcm_name for p in processors}
+    if len(datasets) != 1:
+        raise ValueError(f"process_fast needs processors of one dataset, not {sorted(datasets)}")
+    dataset = datasets.pop()
+    start_year, end_year = config["start_year"], config["end_year"]
+    todo, seen = [], set()
+    for processor in processors:
+        save_path = processor._save_path
+        if save_path in seen:
+            continue
+        seen.add(save_path)
+        if os.path.exists(save_path) and not overwrite:
+            logging.info(f"Processed RCM data already exists at {save_path}. Skipping processing.")
+            processor._check_existing(save_path, start_year, end_year, f"{dataset} ({processor.model_point.release})")
+        else:
+            todo.append(processor)
     if not todo:
         return []
-    frames = forcing_for_sites(dataset, todo, **kwargs)
-    for path, frame in frames.items():
-        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-        frame.to_csv(path)
-        logging.info(f"Forcing CSV saved to {path}")
-    return list(frames)
+
+    settings = ExtractSettings.from_config(dataset, **overrides)
+    files = list_files(settings)
+    lat2d, lon2d = read_grid(next(iter(files.values()))[0])
+    for processor in todo:
+        mp = processor.model_point
+        logging.info(
+            f"{processor._borehole_lat}, {processor._borehole_lon}: model point {mp.tag}, "
+            f"{mp.distance_km:.1f} km from the cell centre"
+        )
+        if not (np.isclose(lat2d[mp.i, mp.j], mp.cell_lat) and np.isclose(lon2d[mp.i, mp.j], mp.cell_lon)):
+            raise ValueError(f"{dataset}: the grid of {settings.data_path} does not agree with model point {mp}")
+    if cache_sites is None:
+        cache_sites = [(site.lat, site.lon) for site in sites().values()]
+    cache_sites = list(cache_sites) + [(p._borehole_lat, p._borehole_lon) for p in todo]
+    cells = [(p.model_point.i, p.model_point.j) for p in todo]
+    use_cache = bool(config.get("forcing_cache", True)) if use_cache is None else use_cache
+    frames, source_files = forcing_for_cells(dataset, cells, use_cache, cache_sites, files, **overrides)
+
+    extra = {
+        "extraction": "h5py (FEAT-003, src/force/extract.py)",
+        "extraction_cache": cache_path(dataset) if use_cache else None,
+        "unit_factors_applied": settings.unit_factors,
+    }
+    written = []
+    for processor, cell in zip(todo, cells):
+        processor.save_forcing(processor._save_path, frames[cell], source_files, extra=extra)
+        written.append(processor._save_path)
+    return written
