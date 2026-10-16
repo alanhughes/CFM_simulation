@@ -435,3 +435,287 @@ def extract_points(
     elif settings.dataset != dataset:
         raise ValueError(f"settings are for {settings.dataset!r}, not {dataset!r}")
     return _extract(settings, cells)
+
+
+# ----------------------------------------------------------------------------------------------------------------
+# Local cache around the sites
+# ----------------------------------------------------------------------------------------------------------------
+
+
+def cache_path(dataset: str, cfg: Optional[Mapping] = None) -> str:
+    """Path of cache.h5 for a dataset. The folder comes from forcing_cache_dir (placeholders: CFM_data_path,
+    rcm_name)."""
+    if cfg is None:
+        from cfm_config import config as cfg
+    folder = (cfg.get("forcing_cache_dir") or DEFAULT_CACHE_DIR).format(
+        CFM_data_path=cfg["CFM_data_path"], rcm_name=dataset
+    )
+    return os.path.join(folder, CACHE_FILE_NAME)
+
+
+def source_manifest(files: Mapping[str, Sequence[str]]) -> List[list]:
+    """[variable, file name, size, mtime_ns] for each source file. A change in any of them makes the cache stale."""
+    manifest = []
+    for var, paths in files.items():
+        for path in paths:
+            stat = os.stat(path)
+            manifest.append([var, os.path.basename(path), int(stat.st_size), int(stat.st_mtime_ns)])
+    return manifest
+
+
+def box_for_sites(
+    lat2d: np.ndarray,
+    lon2d: np.ndarray,
+    sites: Sequence[Tuple[float, float]],
+    margin: Mapping[str, float],
+    cells: Sequence[Cell] = (),
+) -> Box:
+    """Index box (y0, y1, x0, x1) around the grid cells within the lat/lon range of the sites plus the margin.
+
+    The box also contains the given cells (e.g. the selected cell of each site), so it is never empty. The grid is
+    rotated, so the box in index space is the bounding box of the cells in the lat/lon range. Longitudes are not
+    wrapped at +-180 degrees, which is correct for the Antarctic Peninsula.
+    """
+    lats = [s[0] for s in sites]
+    lons = [s[1] for s in sites]
+    ys, xs = [], []
+    if sites:
+        in_range = (
+            (lat2d >= min(lats) - margin["lat"])
+            & (lat2d <= max(lats) + margin["lat"])
+            & (lon2d >= min(lons) - margin["lon"])
+            & (lon2d <= max(lons) + margin["lon"])
+        )
+        ys, xs = np.nonzero(in_range)
+        ys, xs = ys.tolist(), xs.tolist()
+    ys += [c[0] for c in cells]
+    xs += [c[1] for c in cells]
+    if not ys:
+        raise ValueError("box_for_sites needs at least one site or cell")
+    return min(ys), max(ys) + 1, min(xs), max(xs) + 1
+
+
+def box_contains(box: Box, cells: Iterable[Cell]) -> bool:
+    y0, y1, x0, x1 = box
+    return all(y0 <= y < y1 and x0 <= x < x1 for y, x in cells)
+
+
+def union_box(a: Box, b: Box) -> Box:
+    return min(a[0], b[0]), max(a[1], b[1]), min(a[2], b[2]), max(a[3], b[3])
+
+
+def _identity(settings: ExtractSettings) -> dict:
+    """The settings that the cached values depend on. A change in any of them makes the cache stale."""
+    return {
+        "version": CACHE_VERSION,
+        "dataset": settings.dataset,
+        "data_path": os.path.abspath(settings.data_path),
+        "column_map": settings.column_map,
+        "unit_factors": settings.unit_factors,
+        "start_year": settings.start_year,
+        "end_year": settings.end_year,
+    }
+
+
+def read_cache_meta(path: str) -> Optional[dict]:
+    """The metadata of a cache file, or None if there is no readable cache."""
+    if not os.path.exists(path):
+        return None
+    try:
+        with h5py.File(path, "r") as h5:
+            meta = json.loads(_attr_str(h5.attrs, "meta"))
+    except (OSError, KeyError, TypeError, ValueError) as error:
+        logging.warning(f"Cannot read forcing cache {path} ({error}); it will be made again")
+        return None
+    meta["box"] = tuple(meta["box"])
+    return meta
+
+
+def cache_stale_reason(meta: Optional[dict], settings: ExtractSettings, manifest: List[list]) -> Optional[str]:
+    """Why the cache cannot be used for these settings and source files, or None if it can."""
+    if meta is None:
+        return "no cache"
+    identity = _identity(settings)
+    for key, value in identity.items():
+        if json.loads(json.dumps(value)) != meta.get(key):
+            return f"{key} changed"
+    if meta.get("files") != manifest:
+        return "source files changed (list, sizes or modification times)"
+    return None
+
+
+def build_cache(
+    settings: ExtractSettings,
+    box: Box,
+    path: str,
+    files: Optional[Dict[str, List[str]]] = None,
+    margin: Optional[Mapping[str, float]] = None,
+) -> None:
+    """Read all cells of the box in one pass over the share and write them to a cache file.
+
+    Each CFM column is stored as float32 (time, y, x) with chunks (time, 16, 16), so one cell reads one chunk. The
+    file is written under a temporary name and then renamed, so a stopped build leaves no partial cache.
+    """
+    if files is None:
+        files = list_files(settings)
+    manifest = source_manifest(files)
+    y0, y1, x0, x1 = box
+    yy, xx = np.meshgrid(np.arange(y0, y1), np.arange(x0, x1), indexing="ij")
+    cells = list(zip(yy.ravel().tolist(), xx.ravel().tolist()))
+    times, raw = read_raw(settings, cells, files)
+    columns = derive_columns(raw, settings)
+    del raw
+    keep = time_selection(times, settings.start_year, settings.end_year)
+    times = times[keep]
+    lat2d, lon2d = read_grid(next(iter(files.values()))[0])
+
+    meta = dict(
+        _identity(settings),
+        box=list(box),
+        margin=dict(margin or {}),
+        files=manifest,
+        created=pd.Timestamp.now().isoformat(timespec="seconds"),
+    )
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    tmp_path = f"{path}.tmp{os.getpid()}"
+    shape = (len(times), y1 - y0, x1 - x0)
+    chunks = (len(times), min(CACHE_CHUNK, shape[1]), min(CACHE_CHUNK, shape[2])) if len(times) else None
+    try:
+        with h5py.File(tmp_path, "w") as h5:
+            h5.attrs["meta"] = json.dumps(meta)
+            h5.create_dataset("time", data=times.values.astype("datetime64[ns]").astype(np.int64))
+            h5["time"].attrs["units"] = "nanoseconds since 1970-01-01"
+            h5.create_dataset("lat", data=lat2d[y0:y1, x0:x1])
+            h5.create_dataset("lon", data=lon2d[y0:y1, x0:x1])
+            columns_group = h5.create_group("columns")
+            columns_group.attrs["order"] = json.dumps(list(columns))
+            for cfm, values in columns.items():
+                data = values[keep].reshape(shape).astype(np.float32, copy=False)
+                columns_group.create_dataset(cfm, data=data, chunks=chunks)
+        os.replace(tmp_path, path)
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+    size = os.path.getsize(path)
+    logging.info(f"Forcing cache written to {path}: box {box}, {shape[1] * shape[2]} cells, {size / 1e9:.2f} GB")
+
+
+def read_cache_points(path: str, cells: Sequence[Cell]) -> Dict[Cell, pd.DataFrame]:
+    """Forcing DataFrames for cells from a cache file. All the cells must be inside the cache box."""
+    with h5py.File(path, "r") as h5:
+        meta = json.loads(_attr_str(h5.attrs, "meta"))
+        y0, y1, x0, x1 = meta["box"]
+        if not box_contains((y0, y1, x0, x1), cells):
+            raise ValueError(f"Cells {cells} are not all inside the cache box {meta['box']}")
+        times = pd.DatetimeIndex(h5["time"][:].astype("datetime64[ns]"), name="time")
+        order = json.loads(_attr_str(h5["columns"].attrs, "order"))
+        frames = {}
+        for y, x in dict.fromkeys((int(y), int(x)) for y, x in cells):
+            frames[(y, x)] = pd.DataFrame({cfm: h5["columns"][cfm][:, y - y0, x - x0] for cfm in order}, index=times)
+    return frames
+
+
+def ensure_cache(
+    settings: ExtractSettings,
+    path: str,
+    cells: Sequence[Cell],
+    sites: Sequence[Tuple[float, float]],
+    margin: Mapping[str, float],
+    files: Optional[Dict[str, List[str]]] = None,
+    grid: Optional[Tuple[np.ndarray, np.ndarray]] = None,
+) -> str:
+    """Make sure that the cache at path is current and contains the cells. Build it again if not.
+
+    A new box contains all the sites plus the margin, the given cells and, if the old cache is for the same data,
+    the old box too, so no site drops out of the cache.
+    """
+    if files is None:
+        files = list_files(settings)
+    manifest = source_manifest(files)
+    meta = read_cache_meta(path)
+    reason = cache_stale_reason(meta, settings, manifest)
+    if reason is None and box_contains(meta["box"], cells):
+        return path
+    if reason is None:
+        reason = "a cell is outside the cache box"
+    if grid is None:
+        grid = read_grid(next(iter(files.values()))[0])
+    box = box_for_sites(grid[0], grid[1], sites, margin, cells)
+    if (
+        meta is not None
+        and meta.get("dataset") == settings.dataset
+        and meta.get("data_path") == os.path.abspath(settings.data_path)
+    ):
+        box = union_box(box, meta["box"])
+    logging.info(f"Making the {settings.dataset} forcing cache again ({reason}); new box {box}")
+    build_cache(settings, box, path, files, margin)
+    return path
+
+
+# ----------------------------------------------------------------------------------------------------------------
+# Public: forcing for sites, CSV output
+# ----------------------------------------------------------------------------------------------------------------
+
+
+def forcing_for_sites(
+    dataset: str,
+    sites: Mapping[str, Tuple[float, float]],
+    use_cache: Optional[bool] = None,
+    cache_sites: Sequence[Tuple[float, float]] = (),
+    cfg: Optional[Mapping] = None,
+    **overrides,
+) -> Dict[str, pd.DataFrame]:
+    """Forcing DataFrame for each site (name -> (lat, lon)), from one pass over the share or from the cache.
+
+    Args:
+        dataset: "RACMO" or "RACMO23".
+        sites: the sites to return.
+        use_cache: use cache.h5; default from the forcing_cache key (true if not set).
+        cache_sites: more (lat, lon) points for the cache box, e.g. all borehole_sites, so later sites near them
+            need no pass over the share.
+        cfg: config dict; default config.yaml.
+    """
+    if cfg is None:
+        from cfm_config import config as cfg
+    settings = ExtractSettings.from_config(dataset, cfg, **overrides)
+    if use_cache is None:
+        use_cache = bool(cfg.get("forcing_cache", True))
+    files = list_files(settings)
+    grid = read_grid(next(iter(files.values()))[0])
+    site_cells = {}
+    for name, (lat, lon) in sites.items():
+        i, j, km = nearest_cell(grid[0], grid[1], lat, lon)
+        site_cells[name] = (i, j)
+        logging.info(f"{dataset} {name} ({lat}, {lon}): grid cell (rlat, rlon) = ({i}, {j}), {km:.1f} km away")
+    cells = list(site_cells.values())
+
+    if use_cache:
+        path = cache_path(dataset, cfg)
+        margin = dict(cfg.get("forcing_cache_margin") or DEFAULT_CACHE_MARGIN)
+        box_sites = list(sites.values()) + [tuple(s) for s in cache_sites]
+        ensure_cache(settings, path, cells, box_sites, margin, files, grid)
+        frames = read_cache_points(path, cells)
+    else:
+        frames = _extract(settings, cells, files)
+    return {name: frames[cell] for name, cell in site_cells.items()}
+
+
+def write_forcing_csvs(
+    dataset: str, targets: Mapping[str, Tuple[float, float]], overwrite: bool = False, **kwargs
+) -> List[str]:
+    """Write one forcing CSV for each target (CSV path -> (lat, lon)) in one pass. Returns the paths written.
+
+    Existing CSVs are skipped unless overwrite is true, as in ProcessBase.process. kwargs go to forcing_for_sites.
+    """
+    todo = {path: site for path, site in targets.items() if overwrite or not os.path.exists(path)}
+    for path in targets:
+        if path not in todo:
+            logging.info(f"Forcing CSV already exists at {path}. Skipping.")
+    if not todo:
+        return []
+    frames = forcing_for_sites(dataset, todo, **kwargs)
+    for path, frame in frames.items():
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+        frame.to_csv(path)
+        logging.info(f"Forcing CSV saved to {path}")
+    return list(frames)

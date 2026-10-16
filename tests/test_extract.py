@@ -338,9 +338,113 @@ def test_list_files_missing_variable(cfg):
         extract.list_files(settings)
 
 
+# ---------------------------------------------------------------------------------------------------------------
+# Cache
+# ---------------------------------------------------------------------------------------------------------------
+
+
 def test_nearest_cell_old_rule_and_distance():
     lat, lon = _grid()
     i, j, km = extract.nearest_cell(lat, lon, lat[4, 3], lon[4, 3])
     assert (i, j) == (4, 3) and km == pytest.approx(0, abs=1e-9)
     i, j, km = extract.nearest_cell(lat, lon, lat[4, 3] + 0.01, lon[4, 3])
     assert (i, j) == (4, 3) and km == pytest.approx(1.112, abs=1e-3)
+
+
+def test_box_for_sites():
+    lat, lon = _grid()
+    box = extract.box_for_sites(lat, lon, [(-67.6, -65.1)], {"lat": 0.0, "lon": 0.0}, cells=[(4, 3)])
+    assert box == (4, 5, 3, 4)
+    box = extract.box_for_sites(lat, lon, [(-67.6, -65.1)], {"lat": 0.2, "lon": 0.3})
+    y0, y1, x0, x1 = box
+    inside = (lat >= -67.8) & (lat <= -67.4) & (lon >= -65.4) & (lon <= -64.8)
+    ys, xs = np.nonzero(inside)
+    assert (y0, y1, x0, x1) == (ys.min(), ys.max() + 1, xs.min(), xs.max() + 1)
+    with pytest.raises(ValueError):
+        extract.box_for_sites(lat, lon, [], {"lat": 0, "lon": 0})
+
+
+def test_box_contains_and_union():
+    assert extract.box_contains((1, 3, 2, 5), [(1, 2), (2, 4)])
+    assert not extract.box_contains((1, 3, 2, 5), [(3, 2)])
+    assert extract.union_box((1, 3, 2, 5), (0, 2, 4, 9)) == (0, 3, 2, 9)
+
+
+def test_cache_path(cfg):
+    assert extract.cache_path("RACMO") == f"{cfg['CFM_data_path']}/forcing/RACMO/cache.h5"
+    config["forcing_cache_dir"] = "/elsewhere/{rcm_name}/x"
+    assert extract.cache_path("RACMO23") == "/elsewhere/RACMO23/x/cache.h5"
+
+
+@pytest.mark.parametrize("dataset", ["RACMO", "RACMO23"])
+def test_cache_matches_direct_extraction(cfg, dataset):
+    config["forcing_cache_margin"] = {"lat": 0.1, "lon": 0.2}
+    sites = {"a": (-67.6, -65.1), "b": (-67.78, -65.0)}
+    direct = extract.forcing_for_sites(dataset, sites, use_cache=False)
+    cached = extract.forcing_for_sites(dataset, sites, use_cache=True)
+    for name in sites:
+        pd.testing.assert_frame_equal(cached[name], direct[name], check_exact=True, check_freq=False)
+    with h5py.File(extract.cache_path(dataset)) as h5:
+        y0, y1, x0, x1 = extract.read_cache_meta(extract.cache_path(dataset))["box"]
+        assert h5["columns/T2m"].chunks == (h5["time"].shape[0], min(16, y1 - y0), min(16, x1 - x0))
+        assert h5["columns/T2m"].dtype == np.float32
+
+
+def test_cache_reuse_and_rebuild(cfg, monkeypatch):
+    config["forcing_cache_margin"] = {"lat": 0.0, "lon": 0.0}
+    calls = []
+    real_build = extract.build_cache
+    monkeypatch.setattr(extract, "build_cache", lambda *a, **k: (calls.append(a[1]), real_build(*a, **k)))
+    path = extract.cache_path("RACMO23")
+
+    extract.forcing_for_sites("RACMO23", {"a": (-67.6, -65.1)})
+    assert len(calls) == 1
+    first_box = calls[0]
+
+    extract.forcing_for_sites("RACMO23", {"a": (-67.6, -65.1)})  # same site: no new pass
+    assert len(calls) == 1
+
+    far = (-67.2, -63.6)  # outside the box: new box contains the old box and the new site
+    frames = extract.forcing_for_sites("RACMO23", {"far": far})
+    assert len(calls) == 2
+    assert extract.box_contains(calls[1], [first_box[::2], (first_box[1] - 1, first_box[3] - 1)])
+    lat, lon = _grid()
+    direct = extract.forcing_for_sites("RACMO23", {"far": far}, use_cache=False)
+    pd.testing.assert_frame_equal(frames["far"], direct["far"], check_exact=True)
+
+    source = sorted((cfg["RACMO23_data_path"] + "/" + f) for f in os.listdir(cfg["RACMO23_data_path"]))[0]
+    stat = os.stat(source)
+    os.utime(source, ns=(stat.st_atime_ns, stat.st_mtime_ns + 10**9))  # a source file changed
+    try:
+        extract.forcing_for_sites("RACMO23", {"a": (-67.6, -65.1)})
+        assert len(calls) == 3
+        assert calls[2] == calls[1]  # the rebuild keeps the old box
+        config["end_year"] = 1980  # a different period
+        extract.forcing_for_sites("RACMO23", {"a": (-67.6, -65.1)})
+        assert len(calls) == 4
+    finally:
+        os.utime(source, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    assert not [f for f in os.listdir(os.path.dirname(path)) if ".tmp" in f]
+
+
+def test_corrupt_cache_is_rebuilt(cfg):
+    path = extract.cache_path("RACMO")
+    os.makedirs(os.path.dirname(path))
+    with open(path, "w") as f:
+        f.write("not hdf5")
+    frames = extract.forcing_for_sites("RACMO", {"a": (-67.6, -65.1)})
+    assert extract.read_cache_meta(path) is not None
+    assert len(frames["a"]) == 365 + 366 + 365
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# CSV output and the opt-in switch in ProcessRACMO
+# ---------------------------------------------------------------------------------------------------------------
+
+
+def test_write_forcing_csvs_skips_existing(cfg, tmp_path):
+    targets = {str(tmp_path / "a.csv"): (-67.6, -65.1), str(tmp_path / "b.csv"): (-67.78, -65.0)}
+    assert sorted(extract.write_forcing_csvs("RACMO", targets, use_cache=False)) == sorted(targets)
+    assert extract.write_forcing_csvs("RACMO", targets, use_cache=False) == []
+    frame = pd.read_csv(tmp_path / "a.csv", index_col=0)
+    assert list(frame.columns) == list(RACMO_MAP.values()) and frame.index.name == "time"
