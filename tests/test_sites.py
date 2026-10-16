@@ -107,7 +107,11 @@ def test_old_config_with_borehole_sites_is_an_error(tmp_path):
     (tmp_path / "config.yaml").write_text(old)
     src = str(Path(cfm_config.__file__).parent)
     result = subprocess.run(
-        [sys.executable, "-c", "import cfm_config"], cwd=tmp_path, env={"PYTHONPATH": src}, capture_output=True, text=True
+        [sys.executable, "-c", "import cfm_config"],
+        cwd=tmp_path,
+        env={"PYTHONPATH": src},
+        capture_output=True,
+        text=True,
     )
     assert result.returncode != 0
     assert "borehole_sites" in result.stderr and "sites.yaml" in result.stderr

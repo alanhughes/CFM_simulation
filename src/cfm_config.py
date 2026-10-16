@@ -19,7 +19,8 @@ SITES_LOCK_FILE = REPO_ROOT / "sites.lock"
 with open("config.yaml", "r") as file:
     config = yaml.safe_load(file)
 
-# only expand {cpom_mount} - other placeholders (e.g. {CFM_data_path} in forcing_data_path) are filled in where they're used
+# only expand {cpom_mount} - other placeholders (e.g. {CFM_data_path} in forcing_data_path) are filled in where
+# they're used
 for key, value in config.items():
     if isinstance(value, str):
         config[key] = value.replace("{cpom_mount}", config["cpom_mount"])

@@ -11,7 +11,8 @@ For each old CSV, the script:
 4. Reads the dates in the CSV. If the data does not cover start_year to end_year (BUG-003), but covers complete years
    from start_year to an earlier end year, it proposes the cache name with that end year. The old code kept only the
    years in the range, so the data is the same as an extraction with the earlier end year.
-5. Groups the CSVs that go to one cache file. Identical CSVs (same SHA-256) give one copy; different CSVs are a CONFLICT.
+5. Groups the CSVs that go to one cache file. Identical CSVs (same SHA-256) give one copy. Different CSVs are a
+   CONFLICT.
 6. With --verify, compares the T2m column of the first year with the RCM data at the model point and at the old cell
    (RACMO and RACMO23 only; reads one variable at one point from the share).
 
@@ -36,7 +37,9 @@ from cfm_config import sites
 from force.cache import ForcingCoverageError, check_date_coverage, forcing_csv_path, sha256_file
 from force.model_point import ModelPoint, _grid, model_point_at, rcm_data_path
 
-OLD_NAME = re.compile(r"^(?P<rcm>MAR|RACMO|RACMO23)_(?P<lat>-?[\d.]+)_(?P<lon>-?[\d.]+)_(?P<start>\d{4})_(?P<end>\d{4})\.csv$")
+OLD_NAME = re.compile(
+    r"^(?P<rcm>MAR|RACMO|RACMO23)_(?P<lat>-?[\d.]+)_(?P<lon>-?[\d.]+)_(?P<start>\d{4})_(?P<end>\d{4})\.csv$"
+)
 
 
 @dataclass
@@ -170,7 +173,8 @@ def main(argv: List[str]) -> int:
         else:
             for plan in group[1:]:
                 plan.action = "DUPLICATE"
-                plan.note = (plan.note + "; " if plan.note else "") + f"same data as {os.path.basename(group[0].source)}"
+                same = f"same data as {os.path.basename(group[0].source)}"
+                plan.note = (plan.note + "; " if plan.note else "") + same
             if os.path.exists(target):
                 same = sha256_file(target) in hashes
                 for plan in group:

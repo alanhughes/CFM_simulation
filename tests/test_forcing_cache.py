@@ -51,7 +51,8 @@ def test_date_coverage_complete():
 def test_date_coverage_stops_early():
     """BUG-003: the ANT-12 data stops at 2023-12-31, but end_year is 2024."""
     dates = pd.date_range("1979-01-01 12:00", "2023-12-31 12:00", freq="D")
-    with pytest.raises(ForcingCoverageError, match=r"RACMO \(ANT-12\): no data for the years 2024.*stops at 2023-12-31"):
+    expected = r"RACMO \(ANT-12\): no data for the years 2024.*stops at 2023-12-31"
+    with pytest.raises(ForcingCoverageError, match=expected):
         check_date_coverage(dates, 1979, 2024, "RACMO (ANT-12)")
 
 

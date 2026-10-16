@@ -6,7 +6,15 @@ import xarray as xr
 
 from cfm_config import config, get_site
 from force.grid import great_circle_km
-from force.model_point import clear_cache, model_point, model_point_at, model_point_label, model_point_tag, rcm_release, shared_model_points
+from force.model_point import (
+    clear_cache,
+    model_point,
+    model_point_at,
+    model_point_label,
+    model_point_tag,
+    rcm_release,
+    shared_model_points,
+)
 
 
 def _write_grid(folder, file_name, lat_name="lat", lon_name="lon", dims=("rlat", "rlon")):
