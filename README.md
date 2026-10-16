@@ -106,7 +106,10 @@ python scripts/run_cfm.py --lat -66.403 --lon -63.376 \
 
 `run_cfm.py` processes the RCM forcing into a CSV under `{CFM_data_path}/cfm_input/`, then runs the CFM, writing to `{CFM_data_path}/cfm_output/CFMoutput_<lat>_<lon>_<years>_<physrho>_<liquid>_<rcm>/`.
 
-Two caching behaviours to be aware of: a run whose **output folder already exists is skipped silently** (delete the folder to re-run), and forcing data that has already been processed is reused rather than regenerated.
+Each output folder holds a `manifest.json` that records the run's settings, host and timings, and its `status`: `running`, then `complete` or `failed` (with the error). The wrapper's log goes to `run.log` next to it. Two caching behaviours to be aware of:
+
+- A run is **skipped if its folder has a `complete` manifest**, even if `config.yaml` has changed since, because the folder name does not yet capture every setting. Pass `--force` to rerun it. A `failed` run, or a `running` one whose process has died, is rerun on its own. An old folder with `CFMresults.hdf5` but no manifest is treated as complete.
+- Forcing data that has already been processed is reused rather than regenerated.
 
 The `scripts/*.sh` batch wrappers loop over sites and densification schemes, and `cd` to the repo root themselves, so they can be run from anywhere. `run_cfm_grid.sh` is a SLURM array job: submit it from the repo root (or set `CFM_SIM_ROOT`), and set `CFM_CONDA_ENV` if your env isn't called `cfm` (on luna it was `CFM3.10.11`).
 

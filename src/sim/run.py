@@ -1,13 +1,17 @@
 import json
 import logging
 import os
+import socket
 import sys
+import time
+import traceback
 
 import numpy as np
 import pandas as pd
 from typing import Literal
 
 from cfm_config import cfm_output_folder, config, run_id
+from sim.manifest import COMPLETE, FAILED, RUNNING, is_alive, now, read_manifest, write_manifest
 
 logging.basicConfig(level=logging.INFO)
 
@@ -24,6 +28,7 @@ class CFMRun:
         physRho: str,
         rcm_name: Literal["MAR", "RACMO"],
         liquid: Literal["bucket"],
+        force: bool = False,
     ) -> None:
         """Initialize CFM Run with configuration from config.yaml.
 
@@ -38,6 +43,7 @@ class CFMRun:
             physRho (str): Physical densification scheme to use in CFM model.
             rcm_name (Literal["MAR", "RACMO"]): RCM name to use for forcing data (e.g., MAR or RACMO).
             liquid (Literal["bucket"]): meltwater scheme to use (currently only bucket)
+            force (bool): rerun even if a complete run exists in the output folder.
         """
 
         # all these need to be passed in because they vary by run
@@ -53,6 +59,7 @@ class CFMRun:
         # set physRho and borehole loc from argument in case we've used command line to override config
         self._cfm_config["physRho"] = physRho
         self._force_data: pd.DataFrame = None
+        self._force_data_path: str = None
 
         # also set the liquid scheme in the config
         self._cfm_config["liquid"] = liquid
@@ -60,27 +67,125 @@ class CFMRun:
         # set json config name
         self._json_config_name = f"CFMconfig_{run_id(borehole_lat, borehole_lon, physRho, liquid, rcm_name)}.json"
 
-        # flag to indicate if output folder exists
-        self._output_exists: bool = False
-
-        # set output folder in config
+        # set output folder in config. The folder is made in run(), once the forcing data has been read
         self._cfm_config["resultsFolder"] = cfm_output_folder(borehole_lat, borehole_lon, physRho, liquid, rcm_name)
-
-        if not os.path.exists(self._cfm_config["resultsFolder"]):
-            os.makedirs(self._cfm_config["resultsFolder"])
-            logging.info(f"CFM output will be saved to {self._cfm_config['resultsFolder']}.")
-        else:
-            logging.info(
-                f"CFM output path exists at {self._cfm_config['resultsFolder']}. Delete this folder to rerun simulation."
-            )
-            self._output_exists = True
+        self._force: bool = force
+        self._manifest: dict = {}
 
     def run(self) -> None:
-        """Run the CFM model with the specified configuration and forcing data."""
+        """Run the CFM model with the specified configuration and forcing data, unless a complete run exists.
 
-        if not self._output_exists:
-            self._read_force_data()
+        The run's state is kept in manifest.json in the output folder: "running" while the CFM runs, then "complete"
+        or "failed". Only a "complete" run is skipped, and --force reruns even that.
+        """
+
+        results_folder = self._cfm_config["resultsFolder"]
+        if not self._should_run(results_folder):
+            return
+
+        # read forcing before making the folder, so a missing CSV leaves nothing behind
+        self._read_force_data()
+        os.makedirs(results_folder, exist_ok=True)
+
+        # run.log also stops the CFM deleting the folder at spin-up: it rmtree's resultsFolder if every file in it is
+        # .json or .hdf5 (firn_density_spin.py), which would take manifest.json with it. With run.log present it only
+        # deletes the .hdf5 files.
+        log_handler = logging.FileHandler(os.path.join(results_folder, "run.log"))
+        log_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+        logging.getLogger().addHandler(log_handler)
+
+        self._manifest = self._new_manifest()
+        write_manifest(results_folder, self._manifest)
+        logging.info(f"CFM output will be saved to {results_folder}.")
+
+        start = time.monotonic()
+        try:
             self._run_cfm()
+        except BaseException as error:  # also KeyboardInterrupt, so a ctrl-C run is marked failed, not running
+            self._manifest.update(
+                status=FAILED,
+                finished=now(),
+                runtime_s=round(time.monotonic() - start, 1),
+                error=f"{type(error).__name__}: {error}",
+                traceback=traceback.format_exc(),
+            )
+            write_manifest(results_folder, self._manifest)
+            logging.error(f"CFM run failed, see {results_folder}/manifest.json")
+            raise
+        else:
+            self._manifest.update(status=COMPLETE, finished=now(), runtime_s=round(time.monotonic() - start, 1))
+            write_manifest(results_folder, self._manifest)
+            logging.info(f"CFM run complete in {self._manifest['runtime_s']} s.")
+        finally:
+            logging.getLogger().removeHandler(log_handler)
+            log_handler.close()
+
+    def _should_run(self, results_folder: str) -> bool:
+        """Whether to run the CFM, from the manifest (if any) of an earlier run in results_folder."""
+
+        if not os.path.exists(results_folder):
+            return True
+
+        manifest = read_manifest(results_folder)
+
+        if manifest is None:
+            # made before manifests existed. Keep the old skip only if it holds results, as that is the best we can do
+            if os.path.exists(os.path.join(results_folder, self._cfm_config["resultsFileName"])) and not self._force:
+                logging.warning(
+                    f"{results_folder} has results but no manifest, so it is assumed complete. "
+                    "Use --force to rerun it."
+                )
+                return False
+            logging.info(f"{results_folder} has no manifest and no results. Running again.")
+            return True
+
+        status = manifest["status"]
+        if self._force:
+            logging.info(f"--force: rerunning {results_folder} (status was {status}).")
+            if status == RUNNING and is_alive(manifest):
+                raise RuntimeError(f"{results_folder} is being run by pid {manifest['pid']} on {manifest['host']}.")
+            return True
+
+        if status == COMPLETE:
+            logging.info(f"Complete run found at {results_folder}, skipping. Use --force to rerun.")
+            return False
+        if status == RUNNING:
+            alive = is_alive(manifest)
+            if alive is None:
+                raise RuntimeError(
+                    f"{results_folder} is marked running on {manifest['host']} (pid {manifest['pid']}). "
+                    "If that run is dead, use --force."
+                )
+            if alive:
+                raise RuntimeError(f"{results_folder} is being run by pid {manifest['pid']} on this host.")
+            logging.warning(f"{results_folder} was left running by a dead process (pid {manifest['pid']}). Rerunning.")
+            return True
+        logging.warning(f"{results_folder} has status {status} ({manifest.get('error')}). Rerunning.")
+        return True
+
+    def _new_manifest(self) -> dict:
+        """Manifest for a run that is about to start. The final cfm_config is added once _run_cfm has made it."""
+        return {
+            "status": RUNNING,
+            "run": {
+                "borehole_lat": self._borehole_lat,
+                "borehole_lon": self._borehole_lon,
+                "physRho": self._cfm_config["physRho"],
+                "liquid": self._cfm_config["liquid"],
+                "rcm_name": self._rcm_name,
+                "start_year": config["start_year"],
+                "end_year": config["end_year"],
+                "spin_end_year": config["spin_end_year"],
+                "sublim_sf": config["sublim_sf"],
+                "rho_bottom": config["rho_bottom"],
+                "forcing_csv": self._force_data_path,
+            },
+            "cfm_repo_path": config["CFM_repo_path"],
+            "python": {"executable": sys.executable, "version": sys.version},
+            "host": socket.gethostname(),
+            "pid": os.getpid(),
+            "started": now(),
+        }
 
     def _read_force_data(self) -> None:
         """
@@ -89,7 +194,7 @@ class CFMRun:
         """
 
         # Read in forcing data
-        force_data_path = f"{self._cfm_input_path}/{self._rcm_name}_{self._borehole_lat}_{self._borehole_lon}_{config['start_year']}_{config['end_year']}.csv"
+        self._force_data_path = force_data_path = f"{self._cfm_input_path}/{self._rcm_name}_{self._borehole_lat}_{self._borehole_lon}_{config['start_year']}_{config['end_year']}.csv"
         if not os.path.exists(force_data_path):
             raise FileNotFoundError(
                 f"Forcing data file not found: {force_data_path}. Run read_force_data.py to generate the file."
@@ -136,6 +241,8 @@ class CFMRun:
             "w",
         ) as fp:
             fp.write(json.dumps(self._cfm_config, sort_keys=False, indent=4, separators=(",", ": ")))
+        self._manifest["cfm_config"] = self._cfm_config
+        write_manifest(self._cfm_config["resultsFolder"], self._manifest)
 
         ### Create CFM instance by passing config file and forcing data, then run the model
         firn = FirnDensityNoSpin(
