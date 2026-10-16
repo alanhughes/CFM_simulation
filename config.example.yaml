@@ -12,8 +12,21 @@
 # Where luna's CPOM share is mounted. On a Lancaster VM this is automatic at /home/<username>/luna/CPOM (see README).
 cpom_mount: /home/<username>/luna/CPOM
 
-# Your checkout of https://github.com/UWGlaciology/CommunityFirnModel - point at its CFM_main folder, not the repo root.
-CFM_repo_path: /path/to/CommunityFirnModel/CFM_main
+# The CFM versions you can run, each a git checkout of https://github.com/UWGlaciology/CommunityFirnModel and the
+# python to run it with. repo is the CFM_main folder, not the repo root. Pick one with run_cfm.py --cfm <label>.
+# The label is only a name: each run's manifest records the measured commit and environment. A checkout with
+# uncommitted .py changes is refused - commit local patches to a branch of the CFM checkout first.
+cfm_versions:
+  ab871c8:
+    repo: /path/to/CommunityFirnModel/CFM_main
+    python: /home/<username>/miniforge3/envs/cfm/bin/python
+  # The one exception to the rule above: speersm's runs used 3e3bf7e plus an uncommitted SEB/melt patch, kept as is
+  # so it reproduces them bit for bit (the reference test). Do not set allow_uncommitted on any other version.
+  # 3e3bf7e-speersm:
+  #   repo: /path/to/CommunityFirnModel-3e3bf7e/CFM_main
+  #   python: /home/<username>/miniforge3/envs/cfm-3e3bf7e/bin/python
+  #   allow_uncommitted: true
+default_cfm_version: ab871c8
 
 # Where all output goes (forcing CSVs, CFM results, figures): a local folder, or your own <username>/ folder on the share. Never under archive/.
 CFM_data_path: /path/to/CFM_data

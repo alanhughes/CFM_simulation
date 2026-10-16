@@ -11,15 +11,29 @@ import pandas as pd
 from typing import Literal
 
 from cfm_config import cfm_output_folder, config, run_id
+from cfm_config import cfm_version as lookup_cfm_version
 from force.cache import forcing_csv_path
 from force.model_point import model_point_at
+from sim.identity import check_cfm_identity, measure_cfm_identity, wrapper_identity
 from sim.manifest import COMPLETE, FAILED, RUNNING, is_alive, now, read_manifest, write_manifest
 
 logging.basicConfig(level=logging.INFO)
 
-sys.path.append(config["CFM_repo_path"])
-from RCMpkl_to_spin import makeSpinFiles  # noqa: E402 # type: ignore
-from firn_density_nospin import FirnDensityNoSpin  # noqa: E402 # type: ignore
+
+def import_cfm(repo: str) -> tuple:
+    """Import makeSpinFiles and FirnDensityNoSpin from the CFM in repo.
+
+    The CFM's modules are flat top-level ones, so one process can only import one CFM. scripts/run_cfm.py starts each
+    run in its own process (sim.worker) for this reason.
+    """
+    loaded = sys.modules.get("firn_density_nospin")
+    if loaded is not None and os.path.realpath(os.path.dirname(loaded.__file__)) != os.path.realpath(repo):
+        raise RuntimeError(f"This process already imported the CFM from {os.path.dirname(loaded.__file__)}, not {repo}.")
+    sys.path.append(repo)
+    from RCMpkl_to_spin import makeSpinFiles  # type: ignore
+    from firn_density_nospin import FirnDensityNoSpin  # type: ignore
+
+    return makeSpinFiles, FirnDensityNoSpin
 
 
 class CFMRun:
@@ -30,7 +44,9 @@ class CFMRun:
         physRho: str,
         rcm_name: Literal["MAR", "RACMO"],
         liquid: Literal["bucket"],
+        cfm_version: dict | None = None,
         force: bool = False,
+        site: str | None = None,
     ) -> None:
         """Initialize CFM Run with configuration from config.yaml.
 
@@ -45,7 +61,10 @@ class CFMRun:
             physRho (str): Physical densification scheme to use in CFM model.
             rcm_name (Literal["MAR", "RACMO"]): RCM name to use for forcing data (e.g., MAR or RACMO).
             liquid (Literal["bucket"]): meltwater scheme to use (currently only bucket)
+            cfm_version (dict | None): CFM version from cfm_config.cfm_version(), default_cfm_version if None. This
+                process must be running that version's python.
             force (bool): rerun even if a complete run exists in the output folder.
+            site (str | None): name in sites.yaml of the site at borehole_lat/borehole_lon, for the manifest.
         """
 
         # all these need to be passed in because they vary by run
@@ -72,6 +91,8 @@ class CFMRun:
         # set output folder in config. The folder is made in run(), once the forcing data has been read
         self._cfm_config["resultsFolder"] = cfm_output_folder(borehole_lat, borehole_lon, physRho, liquid, rcm_name)
         self._force: bool = force
+        self._site: str | None = site
+        self._cfm_version: dict = cfm_version or lookup_cfm_version()
         self._manifest: dict = {}
 
     def run(self) -> None:
@@ -85,6 +106,14 @@ class CFMRun:
         if not self._should_run(results_folder):
             return
 
+        if os.path.realpath(sys.executable) != os.path.realpath(self._cfm_version["python"]):
+            raise RuntimeError(
+                f"CFM version {self._cfm_version['label']!r} runs with {self._cfm_version['python']}, "
+                f"but this is {sys.executable}. Use scripts/run_cfm.py, which starts the right one."
+            )
+        cfm_identity = measure_cfm_identity(self._cfm_version)
+        check_cfm_identity(cfm_identity)
+
         # read forcing before making the folder, so a missing CSV leaves nothing behind
         self._read_force_data()
         os.makedirs(results_folder, exist_ok=True)
@@ -96,7 +125,7 @@ class CFMRun:
         log_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
         logging.getLogger().addHandler(log_handler)
 
-        self._manifest = self._new_manifest()
+        self._manifest = self._new_manifest(cfm_identity)
         write_manifest(results_folder, self._manifest)
         logging.info(f"CFM output will be saved to {results_folder}.")
 
@@ -165,11 +194,12 @@ class CFMRun:
         logging.warning(f"{results_folder} has status {status} ({manifest.get('error')}). Rerunning.")
         return True
 
-    def _new_manifest(self) -> dict:
+    def _new_manifest(self, cfm_identity: dict) -> dict:
         """Manifest for a run that is about to start. The final cfm_config is added once _run_cfm has made it."""
         return {
             "status": RUNNING,
             "run": {
+                "site": self._site,
                 "borehole_lat": self._borehole_lat,
                 "borehole_lon": self._borehole_lon,
                 "physRho": self._cfm_config["physRho"],
@@ -182,8 +212,8 @@ class CFMRun:
                 "rho_bottom": config["rho_bottom"],
                 "forcing_csv": self._force_data_path,
             },
-            "cfm_repo_path": config["CFM_repo_path"],
-            "python": {"executable": sys.executable, "version": sys.version},
+            "cfm": cfm_identity,
+            "wrapper": wrapper_identity(),
             "host": socket.gethostname(),
             "pid": os.getpid(),
             "started": now(),
@@ -211,6 +241,8 @@ class CFMRun:
         """Run the CFM model using the forcing data and configuration.
         This code is mostly copied from main.py in the CFM repository.
         """
+
+        makeSpinFiles, FirnDensityNoSpin = import_cfm(self._cfm_version["repo"])
 
         # format the CFM forcing data (including creating the spin up)
         # climateTS is a dictionary with the various climate fields needed, in the correct units.

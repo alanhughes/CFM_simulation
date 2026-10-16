@@ -1,6 +1,6 @@
 """Tests for the run manifest and the skip logic in CFMRun.run (BUG-004). Run from the repo root.
 
-The CFM itself is not run: _read_force_data and _run_cfm are replaced with stubs.
+The CFM itself is not run: _read_force_data, _run_cfm and the CFM identity are replaced with stubs.
 """
 
 import os
@@ -9,11 +9,13 @@ import sys
 
 import pytest
 
+import sim.run
 from cfm_config import config
 from sim.manifest import COMPLETE, FAILED, RUNNING, read_manifest, write_manifest
 from sim.run import CFMRun
 
 SITE = (-66.403, -63.376, "GSFC2020", "RACMO", "bucket")
+VERSION = {"label": "test", "repo": "/nowhere/CFM_main", "python": sys.executable, "allow_uncommitted": False}
 
 
 @pytest.fixture
@@ -41,8 +43,15 @@ def cfm_calls(monkeypatch):
     return calls
 
 
+@pytest.fixture(autouse=True)
+def cfm_identity(monkeypatch):
+    """Stub out the CFM identity, which would otherwise run git and pip freeze on VERSION's repo."""
+    monkeypatch.setattr(sim.run, "measure_cfm_identity", lambda version: {**version, "commit": "abc", "status": []})
+    monkeypatch.setattr(sim.run, "check_cfm_identity", lambda identity: None)
+
+
 def new_run(**kwargs) -> CFMRun:
-    return CFMRun(*SITE, **kwargs)
+    return CFMRun(*SITE, VERSION, **kwargs)
 
 
 def folder() -> str:
@@ -63,7 +72,14 @@ def test_new_run_writes_complete_manifest(data_path, cfm_calls):
     assert manifest["run"]["physRho"] == "GSFC2020"
     assert manifest["run"]["forcing_csv"] == "forcing.csv"
     assert "runtime_s" in manifest
+    assert manifest["cfm"]["label"] == "test"
+    assert manifest["cfm"]["commit"] == "abc"
     assert os.path.exists(os.path.join(folder(), "run.log"))
+
+
+def test_site_is_recorded(data_path, cfm_calls):
+    new_run(site="CI-0").run()
+    assert read_manifest(folder())["run"]["site"] == "CI-0"
 
 
 def test_complete_run_is_skipped(data_path, cfm_calls):
@@ -136,4 +152,11 @@ def test_old_folder_with_results_but_no_manifest_is_skipped(data_path, cfm_calls
 def test_missing_forcing_leaves_no_folder(data_path):
     with pytest.raises(FileNotFoundError):
         new_run().run()
+    assert not os.path.exists(folder())
+
+
+def test_wrong_python_is_refused(data_path, cfm_calls):
+    with pytest.raises(RuntimeError, match="runs with"):
+        CFMRun(*SITE, {**VERSION, "python": "/usr/bin/false"}).run()
+    assert cfm_calls == []
     assert not os.path.exists(folder())
