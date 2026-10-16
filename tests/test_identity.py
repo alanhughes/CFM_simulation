@@ -159,6 +159,8 @@ def wrapper_repo(tmp_path, monkeypatch):
     repo = tmp_path / "wrapper"
     (repo / "src").mkdir(parents=True)
     (repo / "src" / "run.py").write_text("x = 1\n")
+    (repo / "src" / "plot").mkdir()
+    (repo / "src" / "plot" / "results.py").write_text("y = 1\n")
     (repo / "README.md").write_text("docs\n")
     git(repo, "init", "-q")
     git(repo, "add", ".")
@@ -172,21 +174,24 @@ def commit_all(repo):
     git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "change")
 
 
-def test_src_tree_ignores_commits_outside_src(wrapper_repo):
+def test_run_code_ignores_commits_outside_it(wrapper_repo):
     before = wrapper_identity()
     (wrapper_repo / "README.md").write_text("new docs\n")
+    (wrapper_repo / "src" / "plot" / "results.py").write_text("y = 2\n")
     commit_all(wrapper_repo)
     after = wrapper_identity()
     assert after["commit"] != before["commit"]
-    assert after["src_tree"] == before["src_tree"]
+    assert after["run_code_sha256"] == before["run_code_sha256"]
     (wrapper_repo / "src" / "run.py").write_text("x = 2\n")
     commit_all(wrapper_repo)
-    assert wrapper_identity()["src_tree"] != before["src_tree"]
+    assert wrapper_identity()["run_code_sha256"] != before["run_code_sha256"]
 
 
 def test_uncommitted_src_code_is_refused(wrapper_repo):
     check_wrapper_identity(wrapper_identity())
     (wrapper_repo / "README.md").write_text("new docs\n")
+    (wrapper_repo / "src" / "plot" / "results.py").write_text("y = 2\n")
+    (wrapper_repo / "src" / "plot" / "new.py").write_text("")
     check_wrapper_identity(wrapper_identity())
     (wrapper_repo / "src" / "sub").mkdir()
     (wrapper_repo / "src" / "sub" / "new.py").write_text("")
@@ -197,3 +202,12 @@ def test_uncommitted_src_code_is_refused(wrapper_repo):
 def test_wrapper_not_a_git_checkout_is_refused():
     with pytest.raises(RuntimeError, match="not a git checkout"):
         check_wrapper_identity(None)
+
+
+def test_cfm_run_does_not_import_the_excluded_code():
+    """The run hash leaves out RUN_CODE_EXCLUDED (src/plot/). This is safe only if a CFM run does not import it."""
+    code = "import sys, sim.worker, sim.run, sim.manifest, sim.identity; print(sorted(m.split('.')[0] for m in sys.modules))"
+    loaded = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True).stdout
+    for excluded in sim.identity.RUN_CODE_EXCLUDED:
+        package = excluded.removeprefix("src/").rstrip("/")
+        assert f"'{package}'" not in loaded

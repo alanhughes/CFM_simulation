@@ -25,7 +25,7 @@ COMPLETE = "complete"
 FAILED = "failed"
 
 # a change to the content of run_hash_inputs() must change this number, so that the old and new hashes differ
-HASH_VERSION = 1
+HASH_VERSION = 2  # 2: the run code (src/ without src/plot/) in place of the src/ tree
 
 # the wrapper parameters in config.yaml that change the results
 WRAPPER_PARAMS = ("start_year", "end_year", "spin_end_year", "sublim_sf", "rho_bottom")
@@ -56,7 +56,7 @@ def run_hash_inputs(
         "model_point": {"tag": model_point_tag, "release": rcm_release},
         "forcing_csv_sha256": forcing_csv_sha256,
         "cfm": {key: cfm_identity[key] for key in _HASHED_CFM_IDENTITY_KEYS},
-        "wrapper_src_tree": wrapper_identity["src_tree"],
+        "wrapper_run_code_sha256": wrapper_identity["run_code_sha256"],
     }
 
 
