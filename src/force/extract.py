@@ -6,8 +6,8 @@ processes, and keeps every requested cell from it. Extra cells cost no extra rea
 
 h5py does not decode the data as xarray does, so this module does it itself: CF time units and calendar, _FillValue
 and missing_value (to NaN), scale_factor and add_offset. The derived columns (rain and albedo), the unit factors and
-the column maps follow the old xarray code (ProcessRACMO._xr_to_input_dataframe and ProcessMAR._xr_to_input_dataframe)
-step by step, so the output agrees with the old CSVs. MAR variables have extra axes (SECTOR, OUTLAY, a height level)
+the column maps follow the old xarray code (ProcessRACMO._xr_to_input_dataframe and ProcessMAR._xr_to_input_dataframe,
+now removed; copies are in tests/test_extract.py) step by step, so the output agrees with the old CSVs. MAR variables have extra axes (SECTOR, OUTLAY, a height level)
 inside each chunk; the worker keeps one index on each, by coordinate value (DatasetSpec.level_keys, fixed_levels).
 
 A local cache (cache.h5, next to the forcing CSVs of FEAT-002) keeps all cells in a box around the sites, so a new site
