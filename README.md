@@ -7,7 +7,7 @@ There is no build step — this is pure Python. Three things need to be in place
 
 **1. The CFM checkout.** This repo does not vendor or pip-install the CFM. Clone the CFM alongside this repo and list it under `cfm_versions` in `config.yaml`: a label, the checkout's `CFM_main` folder (not the repo root) and the Python to run it with. You can list several versions and pick one with `run_cfm.py --cfm <label>`. Each run starts a subprocess (`sim.worker`) with that version's Python, which appends the `CFM_main` folder to `sys.path` and imports `RCMpkl_to_spin` and `firn_density_nospin` as flat modules. That is why one process can only use one CFM.
 
-The label is only a name. Each run's `manifest.json` records the CFM's measured commit, its uncommitted changes, the Python version and `pip freeze`. A checkout with uncommitted `.py` changes is refused, so commit local patches to a branch of the CFM checkout. The only exception is a version that sets `allow_uncommitted: true`, kept for the speersm reference test (see `config.example.yaml`).
+The label is only a name. Each run's `manifest.json` records the CFM's measured commit, its uncommitted changes, the Python version and `pip freeze`. A checkout with uncommitted `.py` changes is refused, so commit local patches to a branch of the CFM checkout. For example, the speersm reference version is 3e3bf7e plus speersm's SEB/melt patch, committed on a local branch `speersm-3e3bf7e` (see `config.example.yaml`).
 
 **2. The environment.** Python >=3.10 with the CFM's own dependency set:
 

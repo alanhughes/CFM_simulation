@@ -20,12 +20,11 @@ cfm_versions:
   ab871c8:
     repo: /path/to/CommunityFirnModel/CFM_main
     python: /home/<username>/miniforge3/envs/cfm/bin/python
-  # The one exception to the rule above: speersm's runs used 3e3bf7e plus an uncommitted SEB/melt patch, kept as is
-  # so it reproduces them bit for bit (the reference test). Do not set allow_uncommitted on any other version.
+  # speersm's runs used 3e3bf7e plus a SEB/melt patch. With the patch committed on a branch (speersm-3e3bf7e) of a
+  # CFM worktree, it reproduces them bit for bit (the reference test).
   # 3e3bf7e-speersm:
   #   repo: /path/to/CommunityFirnModel-3e3bf7e/CFM_main
   #   python: /home/<username>/miniforge3/envs/cfm-3e3bf7e/bin/python
-  #   allow_uncommitted: true
 default_cfm_version: ab871c8
 
 # Where all output goes (forcing CSVs, CFM results, figures): a local folder, or your own <username>/ folder on the share. Never under archive/.
