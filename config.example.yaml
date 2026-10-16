@@ -186,7 +186,7 @@ cfm_config:
   grid_outputs: true
   grid_output_res: 0.05
   isoDiff: false
-  iso: D
+  iso: [dD]
   isoOptions: [18,D,NoDiffusion]
   spacewriteint: 1
   strain: false
