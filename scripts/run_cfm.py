@@ -9,6 +9,7 @@ location specified in config file. Also saves the CFM configuration used for the
 Usage:
     python run_cfm.py
     python run_cfm.py --lat <latitude> --lon <longitude> --physrho <physrho_value> -rcm <rcm_name>
+    python run_cfm.py ... --force    # rerun even if a complete run exists
 
 """
 
@@ -28,6 +29,7 @@ if __name__ == "__main__":
     parser.add_argument("--physrho", type=str, help="Physical densification scheme")
     parser.add_argument("--rcm", type=str, help="RCM name to use for forcing data (e.g., MAR or RACMO)")
     parser.add_argument("--liquid", type=str, help="Meltwater scheme to use (currently only bucket)")
+    parser.add_argument("--force", action="store_true", help="Rerun the CFM even if a complete run exists")
 
     args = parser.parse_args()
 
@@ -64,4 +66,4 @@ if __name__ == "__main__":
         logging.error(f"Invalid RCM name: {rcm_name}. Please choose either 'MAR' or 'RACMO' or 'RACMO23'.")
         exit(1)
 
-    CFMRun(borehole_lat, borehole_lon, physRho, rcm_name, liquid).run()
+    CFMRun(borehole_lat, borehole_lon, physRho, rcm_name, liquid, force=args.force).run()
