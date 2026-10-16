@@ -73,7 +73,7 @@ def test_copy_writes_csv_and_json_and_keeps_source(tmp_path):
     assert target.read_bytes() == Path(plan.source).read_bytes()
     assert Path(plan.source).exists()
     record = json.loads(target.with_suffix(".json").read_text())
-    assert record["sha256"] == plan.sha256 == migrate.sha256_file(plan.target)
+    assert record["csv_sha256"] == plan.sha256 == migrate.sha256_file(plan.target)
     assert (record["start_year"], record["end_year"]) == (1979, 2023)
     assert record["model_point"]["tag"] == "RACMO_5_7"
     assert not [p for p in target.parent.iterdir() if ".tmp" in p.name]

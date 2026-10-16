@@ -236,7 +236,6 @@ def copy_plan(plan: Plan) -> None:
         "n_rows": int(len(df)),
         "columns": list(df.columns),
         "data_path": rcm_data_path(mp.rcm_name),
-        "sha256": plan.sha256,
         "csv_sha256": plan.sha256,
         "migrated_from": {"file": plan.source, "site": plan.site, "old_cell": list(plan.old_cell)},
         "created": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
