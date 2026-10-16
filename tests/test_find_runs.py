@@ -1,0 +1,149 @@
+"""Tests for find_runs (src/sim/runs.py) and scripts/link_sites.py (FEAT-001). Run from the repo root.
+
+The run folders are made with manifests only. The model point of a site is a stub, so no RCM data is read.
+"""
+
+import importlib.util
+import os
+from pathlib import Path
+
+import pytest
+
+import sim.runs
+from cfm_config import config
+from sim.manifest import COMPLETE, FAILED, run_folder, write_manifest
+from sim.runs import find_run, find_runs, runs_table
+
+_spec = importlib.util.spec_from_file_location(
+    "link_sites", Path(__file__).resolve().parents[1] / "scripts" / "link_sites.py"
+)
+link_sites = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(link_sites)
+
+SITE_TAGS = {"CI-0": {"RACMO": "RACMO_261_126", "MAR": "MAR_1_2"}, "CI-0-twin": {"RACMO": "RACMO_261_126", "MAR": "MAR_9_9"}}
+
+
+def make_run(tag, physRho="GSFC2020", cfm="ab871c8", hash_="a" * 64, status=COMPLETE, finished="2026-10-16T10:00:00"):
+    rcm = link_sites.rcm_of_tag(tag)
+    folder = run_folder(tag, physRho, "bucket", 1979, 2024, cfm, hash_)
+    os.makedirs(folder)
+    manifest = {
+        "status": status,
+        "run_hash": hash_,
+        "run": {
+            "sites": ["CI-0"],
+            "model_point": {"tag": tag},
+            "rcm_name": rcm,
+            "physRho": physRho,
+            "liquid": "bucket",
+            "start_year": 1979,
+            "end_year": 2024,
+        },
+        "cfm": {"label": cfm, "commit": "c"},
+        "finished": finished,
+    }
+    write_manifest(folder, manifest)
+    return folder
+
+
+@pytest.fixture
+def runs(tmp_path, monkeypatch):
+    monkeypatch.setitem(config, "CFM_data_path", str(tmp_path))
+    monkeypatch.setattr(sim.runs, "_site_model_point", lambda site, rcm: SITE_TAGS[site][rcm])
+    return {
+        "gsfc": make_run("RACMO_261_126"),
+        "crocus": make_run("RACMO_261_126", physRho="Crocus", hash_="b" * 64),
+        "old_cfm": make_run("RACMO_261_126", cfm="3e3bf7e-speersm", hash_="c" * 64),
+        "failed": make_run("RACMO_261_126", physRho="HLdynamic", hash_="d" * 64, status=FAILED),
+        "mar": make_run("MAR_1_2", hash_="e" * 64),
+        "other_cell": make_run("RACMO_100_100", hash_="f" * 64),
+    }
+
+
+def folders(found):
+    return sorted(run.folder for run in found)
+
+
+def test_filters(runs):
+    assert folders(find_runs(physRho="GSFC2020", cfm="ab871c8", rcm_name="RACMO")) == sorted(
+        [runs["gsfc"], runs["other_cell"]]
+    )
+    assert folders(find_runs(model_point="RACMO_261_126", physRho="Crocus")) == [runs["crocus"]]
+    assert folders(find_runs(cfm="3e3bf7e-speersm")) == [runs["old_cfm"]]
+    assert folders(find_runs(run_hash="eee")) == [runs["mar"]]
+
+
+def test_complete_runs_only_by_default(runs):
+    assert runs["failed"] not in folders(find_runs())
+    assert folders(find_runs(status=FAILED)) == [runs["failed"]]
+    assert len(find_runs(status=None)) == 6
+
+
+def test_site_uses_its_model_point(runs):
+    assert folders(find_runs(site="CI-0", rcm_name="RACMO", physRho="GSFC2020")) == sorted(
+        [runs["gsfc"], runs["old_cfm"]]
+    )
+    # two sites in one cell share the run
+    assert find_runs(site="CI-0-twin", physRho="Crocus")[0].folder == runs["crocus"]
+    # with no rcm_name, the model point of the site in each RCM
+    assert runs["mar"] in folders(find_runs(site="CI-0", physRho="GSFC2020"))
+
+
+def test_find_run_gives_the_last_finished(runs, caplog):
+    later = make_run("RACMO_261_126", hash_="9" * 64, finished="2026-10-17T10:00:00")
+    assert find_run(site="CI-0", rcm_name="RACMO", physRho="GSFC2020", cfm="ab871c8").folder == later
+    assert "2 runs" in caplog.text
+    assert find_run(site="CI-0", rcm_name="RACMO", physRho="GSFC2020", run_hash="aaaa").folder == runs["gsfc"]
+    with pytest.raises(LookupError, match="No run"):
+        find_run(physRho="Ligtenberg2011")
+
+
+def test_results_file_and_table(runs):
+    run = find_run(physRho="Crocus")
+    assert run.results_file == os.path.join(runs["crocus"], "CFMresults.hdf5")
+    table = runs_table(find_runs())
+    assert len(table) == 5
+    assert set(table["model_point"]) == {"RACMO_261_126", "MAR_1_2", "RACMO_100_100"}
+
+
+def test_folder_without_run_hash_is_ignored(runs, caplog):
+    write_manifest(runs["gsfc"], {"status": COMPLETE})
+    assert runs["gsfc"] not in folders(find_runs())
+    assert "no run hash" in caplog.text
+
+
+def test_link_sites(runs, tmp_path):
+    runs_root, links = str(tmp_path / "runs"), str(tmp_path / "sites")
+    assert link_sites.rcms_with_runs(runs_root) == ["MAR", "RACMO"]
+    expected = link_sites.expected_links(SITE_TAGS, runs_root, links)
+    changes = link_sites.sync_links(expected, links, ["MAR", "RACMO"])
+    assert len(changes) == 3
+    for site, rcm in [("CI-0", "RACMO"), ("CI-0-twin", "RACMO"), ("CI-0", "MAR")]:
+        link = os.path.join(links, site, rcm)
+        assert os.readlink(link) == f"../../runs/{SITE_TAGS[site][rcm]}"
+        assert os.path.samefile(link, os.path.join(runs_root, SITE_TAGS[site][rcm]))
+    # a second sync changes nothing
+    assert link_sites.sync_links(expected, links, ["MAR", "RACMO"]) == []
+
+
+def test_link_sites_corrects_wrong_links(runs, tmp_path):
+    runs_root, links = str(tmp_path / "runs"), str(tmp_path / "sites")
+    os.makedirs(os.path.join(links, "CI-0"))
+    os.makedirs(os.path.join(links, "gone"))
+    os.symlink("../../runs/RACMO_100_100", os.path.join(links, "CI-0", "RACMO"))
+    os.symlink("../../runs/RACMO_100_100", os.path.join(links, "gone", "RACMO"))
+    expected = link_sites.expected_links(SITE_TAGS, runs_root, links)
+    link_sites.sync_links(expected, links, ["RACMO"])
+    assert os.readlink(os.path.join(links, "CI-0", "RACMO")) == "../../runs/RACMO_261_126"
+    assert not os.path.exists(os.path.join(links, "gone"))
+    assert not os.path.exists(os.path.join(links, "CI-0", "MAR"))  # MAR was not asked for
+
+
+def test_link_sites_dry_run_and_no_data_deleted(runs, tmp_path):
+    runs_root, links = str(tmp_path / "runs"), str(tmp_path / "sites")
+    expected = link_sites.expected_links(SITE_TAGS, runs_root, links)
+    assert link_sites.sync_links(expected, links, ["RACMO"], dry_run=True)
+    assert not os.path.exists(links)
+    os.makedirs(os.path.join(links, "CI-0", "RACMO"))  # a real folder, not a link
+    with pytest.raises(RuntimeError, match="not a symbolic link"):
+        link_sites.sync_links(expected, links, ["RACMO"])
