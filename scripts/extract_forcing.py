@@ -1,47 +1,34 @@
 """Make the RACMO forcing CSVs for many sites in one pass over the share, with the fast h5py extraction (FEAT-003).
 
-By default this does all borehole_sites in config.yaml. With the cache (forcing_cache: true, the default), the first
+By default this does all the active sites in sites.yaml. With the cache (forcing_cache: true, the default), the first
 run also keeps all grid cells in a box around the sites in cache.h5, so a later site near them takes seconds.
-The CSVs go to the same paths as the CSVs of ProcessRACMO (force_data_save_path_pattern). Existing CSVs are skipped.
+The CSVs and JSON files go to the forcing cache of FEAT-002, the same files as ProcessRACMO makes. Existing CSVs are
+checked and skipped.
 
 Usage (from the repo root):
-    python scripts/extract_forcing.py                       # rcm_name from config, all borehole_sites
+    python scripts/extract_forcing.py                       # rcm_name from config, all active sites
     python scripts/extract_forcing.py --rcm RACMO23 --sites CI-0 WI-70
     python scripts/extract_forcing.py --rcm RACMO --no-cache --processes 4
 """
 
 import argparse
 import logging
-from typing import Dict, Optional, Sequence, Tuple
+from typing import Dict, Optional, Sequence
 
-from cfm_config import config
-from force.extract import DATASETS, write_forcing_csvs
+from cfm_config import Site, config, get_site, sites
+from force.extract import DATASETS, process_fast
+from force.process import ProcessRACMO, ProcessRACMO23
 
 logging.basicConfig(level=logging.INFO)
 
+PROCESSORS = {"RACMO": ProcessRACMO, "RACMO23": ProcessRACMO23}
 
-def site_targets(rcm_name: str, names: Optional[Sequence[str]] = None) -> Dict[str, Tuple[float, float]]:
-    """CSV path -> (lat, lon) for the borehole_sites in config (all, or the given names).
 
-    The only place in this script that knows about borehole_sites and the CSV names; FEAT-002 replaces both.
-    """
-    sites = config["borehole_sites"]
-    unknown = sorted(set(names or []) - set(sites))
-    if unknown:
-        raise SystemExit(f"Not in borehole_sites: {unknown}")
-    targets = {}
-    for name in names or sites:
-        lat, lon = sites[name]
-        path = config["force_data_save_path_pattern"].format(
-            CFM_data_path=config["CFM_data_path"],
-            rcm_name=rcm_name,
-            borehole_lat=lat,
-            borehole_lon=lon,
-            start_year=config["start_year"],
-            end_year=config["end_year"],
-        )
-        targets[path] = (lat, lon)
-    return targets
+def select_sites(names: Optional[Sequence[str]] = None) -> Dict[str, Site]:
+    """The active sites in sites.yaml, or the given site names (active or not)."""
+    if names:
+        return {name: get_site(name) for name in names}
+    return sites()
 
 
 def main() -> None:
@@ -49,23 +36,19 @@ def main() -> None:
     parser.add_argument(
         "--rcm", default=config["rcm_name"], choices=sorted(DATASETS), help="dataset (default: rcm_name)"
     )
-    parser.add_argument("--sites", nargs="+", help="names in borehole_sites (default: all)")
+    parser.add_argument("--sites", nargs="+", help="site names in sites.yaml (default: all active sites)")
     parser.add_argument("--no-cache", action="store_true", help="read the share directly, do not use cache.h5")
     parser.add_argument("--processes", type=int, help="worker processes (default: forcing_processes, or 8)")
     parser.add_argument("--overwrite", action="store_true", help="write the CSVs again if they exist")
     args = parser.parse_args()
 
+    selected = select_sites(args.sites)
+    processors = [PROCESSORS[args.rcm](site.lat, site.lon) for site in selected.values()]
+    for name, processor in zip(selected, processors):
+        logging.info(f"{name}: model point {processor.model_point.tag}")
     overrides = {"processes": args.processes} if args.processes else {}
-    # the cache box covers all borehole_sites, also when only some of them are asked for
-    all_sites = list(site_targets(args.rcm).values())
-    written = write_forcing_csvs(
-        args.rcm,
-        site_targets(args.rcm, args.sites),
-        overwrite=args.overwrite,
-        use_cache=False if args.no_cache else None,
-        cache_sites=all_sites,
-        **overrides,
-    )
+    use_cache = False if args.no_cache else None
+    written = process_fast(processors, use_cache=use_cache, overwrite=args.overwrite, **overrides)
     logging.info(f"{len(written)} forcing CSVs written")
 
 
