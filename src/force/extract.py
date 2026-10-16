@@ -38,7 +38,9 @@ DEFAULT_UNIT_FACTORS = {"SUBLIM": [60, 60, 24], "RAIN": [60, 60, 24], "BDOT": [6
 DEFAULT_CACHE_MARGIN = {"lat": 0.5, "lon": 1.0}  # degrees
 DEFAULT_CACHE_DIR = "{CFM_data_path}/forcing/{rcm_name}"
 CACHE_FILE_NAME = "cache.h5"
-CACHE_CHUNK = 16  # cells per side of a cache chunk; each chunk holds the full time series
+# Cells per side of a cache chunk; each chunk holds the full time series. Measured 2026-10-16, XPEN055 cache of 1980
+# cells, one cell not in the page cache: 16 -> 2.0-2.6 s, 8 -> 0.4 s, 4 -> 0.3 s, 2 -> 0.08 s.
+CACHE_CHUNK = 4
 CACHE_VERSION = 1
 TIME_BLOCK = 64  # time steps read in one h5py call; 64 full ANT-12 maps are approximately 90 MB
 
@@ -553,8 +555,9 @@ def build_cache(
 ) -> None:
     """Read all cells of the box in one pass over the share and write them to a cache file.
 
-    Each CFM column is stored as float32 (time, y, x) with chunks (time, 16, 16), so one cell reads one chunk. The
-    file is written under a temporary name and then renamed, so a stopped build leaves no partial cache.
+    Each CFM column is stored as float32 (time, y, x) with chunks (time, CACHE_CHUNK, CACHE_CHUNK), so one cell
+    reads one small chunk. The file is written under a temporary name and then renamed, so a stopped build leaves
+    no partial cache.
     """
     if files is None:
         files = list_files(settings)

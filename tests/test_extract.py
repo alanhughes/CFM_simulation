@@ -386,7 +386,11 @@ def test_cache_matches_direct_extraction(cfg, dataset):
         pd.testing.assert_frame_equal(cached[name], direct[name], check_exact=True, check_freq=False)
     with h5py.File(extract.cache_path(dataset)) as h5:
         y0, y1, x0, x1 = extract.read_cache_meta(extract.cache_path(dataset))["box"]
-        assert h5["columns/T2m"].chunks == (h5["time"].shape[0], min(16, y1 - y0), min(16, x1 - x0))
+        assert h5["columns/T2m"].chunks == (
+            h5["time"].shape[0],
+            min(extract.CACHE_CHUNK, y1 - y0),
+            min(extract.CACHE_CHUNK, x1 - x0),
+        )
         assert h5["columns/T2m"].dtype == np.float32
 
 
@@ -445,18 +449,19 @@ def test_corrupt_cache_is_rebuilt(cfg):
 @pytest.mark.parametrize("dataset, cls", [("RACMO", ProcessRACMO), ("RACMO23", ProcessRACMO23)])
 def test_process_fast_switch_writes_same_csv(cfg, dataset, cls, tmp_path):
     site = (-67.6, -65.1)
-    old = cls(*site)
-    old._save_path = str(tmp_path / "old.csv")
-    old.process()
+    processor = cls(*site)  # only reads _save_path, which FEAT-002 makes a read-only property
+    processor.process()
+    with open(processor._save_path) as file:
+        old_csv = file.read()
+    os.remove(processor._save_path)
 
     config["forcing_fast_extraction"] = True
     try:
-        new = cls(*site)
-        new.process()
+        cls(*site).process()
     finally:
         del config["forcing_fast_extraction"]
-    with open(old._save_path) as a, open(new._save_path) as b:
-        assert a.read() == b.read()
+    with open(processor._save_path) as file:
+        assert file.read() == old_csv
 
 
 def test_write_forcing_csvs_skips_existing(cfg, tmp_path):
