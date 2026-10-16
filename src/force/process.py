@@ -9,6 +9,8 @@ from abc import ABC, abstractmethod
 
 from cfm_config import config
 
+from .grid import nearest_cell
+
 logging.basicConfig(level=logging.INFO)
 
 
@@ -129,10 +131,7 @@ class ProcessMAR(ProcessBase):
         logging.info(f"Processing XR data at year {xr_data['TIME'].dt.year.values[0]}")
 
         # get indices of closest grid point to borehole
-        lat_diff = np.abs(xr_data["LAT"] - self._borehole_lat)
-        lon_diff = np.abs(xr_data["LON"] - self._borehole_lon)
-        distance = np.sqrt(lat_diff**2 + lon_diff**2)
-        y_idx, x_idx = np.unravel_index(distance.argmin(), distance.shape)
+        y_idx, x_idx, _ = nearest_cell(xr_data["LAT"], xr_data["LON"], self._borehole_lat, self._borehole_lon)
 
         # find coordinate names for X/Y (prefer MAR defaults, fallback to X/Y)
         x_coord_candidates = ["X18_215", "X"]
@@ -273,10 +272,7 @@ class ProcessRACMO(ProcessBase):
         """
 
         # get indices of closest grid point to borehole
-        lat_diff = np.abs(xr_data["lat"] - self._borehole_lat)
-        lon_diff = np.abs(xr_data["lon"] - self._borehole_lon)
-        distance = np.sqrt(lat_diff**2 + lon_diff**2)
-        y_idx, x_idx = np.unravel_index(distance.argmin(), distance.shape)
+        y_idx, x_idx, _ = nearest_cell(xr_data["lat"], xr_data["lon"], self._borehole_lat, self._borehole_lon)
 
         # find data at borehole location
         # can use any coordinate as the indexing is the same for all
