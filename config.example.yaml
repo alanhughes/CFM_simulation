@@ -9,13 +9,13 @@
 ## Paths may reference {cpom_mount}, which is expanded by src/cfm_config.py.
 ## Values starting with { must be quoted. Use absolute paths - ~ is not expanded.
 
-# Where luna's CPOM share is mounted on this machine. Mount it read-only (see README) - nothing is ever written here.
-cpom_mount: /path/to/mnt/cpom
+# Where luna's CPOM share is mounted. On a Lancaster VM this is automatic at /home/<username>/luna/CPOM (see README).
+cpom_mount: /home/<username>/luna/CPOM
 
 # Your checkout of https://github.com/UWGlaciology/CommunityFirnModel - point at its CFM_main folder, not the repo root.
 CFM_repo_path: /path/to/CommunityFirnModel/CFM_main
 
-# A LOCAL folder where all output goes (forcing CSVs, CFM results, figures). Must not be on the luna share.
+# Where all output goes (forcing CSVs, CFM results, figures): a local folder, or your own <username>/ folder on the share. Never under archive/.
 CFM_data_path: /path/to/CFM_data
 
 # Raw RCM NetCDF forcing data, read from the luna share. These defaults should work once cpom_mount is set.

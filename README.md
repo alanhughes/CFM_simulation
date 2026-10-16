@@ -29,7 +29,7 @@ The keys that are machine-specific are the directory block at the top:
 | --- | --- |
 | `cpom_mount` | Where the luna CPOM share is mounted (see below) — absolute path, `~` is not expanded |
 | `CFM_repo_path` | The CFM's `CFM_main` folder |
-| `CFM_data_path` | Where the wrapper writes forcing CSVs, model output and figures — a local folder, not the share |
+| `CFM_data_path` | Where the wrapper writes forcing CSVs, model output and figures — a local folder or your own folder on the share (see below) |
 | `MAR_data_path` / `RACMO_data_path` / `RACMO23_data_path` | Where the raw RCM NetCDF forcing files are read from |
 | `in_situ_data_path` | Where the in situ depth-density CSVs are read from |
 
@@ -37,50 +37,62 @@ Everything below that block (borehole sites, densification options, RCM column m
 
 ## Data on the luna share
 
-The CPOM share on luna is **mounted read-only, and all output is written locally**. The share holds other people's data, including the previous user's runs under `speersm/`. We have no admin rights to change permissions on it, so a read-only mount is the only way to guarantee nothing there gets overwritten. Results are copied up to your own folder on the share (`hughes54/CFM_data`) as a separate, deliberate step.
+The canonical way to run this repo is on a Lancaster University VM. There the luna CPOM share is mounted automatically at `/home/<username>/luna/CPOM`, so set:
 
-In `config.yaml` that means:
+```yaml
+cpom_mount: /home/<username>/luna/CPOM
+```
 
-- `cpom_mount` is the read-only mount point (e.g. `/Users/alan/mnt/cpom`). The RCM forcing and in situ data are read through it.
-- `CFM_data_path` is a local folder (e.g. `/Users/alan/code/exageo/CFM_data`). Every file the code writes — forcing CSVs, CFM output, figures, melt files — goes under it.
+The RCM forcing and in situ data are read through it, and the default `*_data_path` entries in `config.example.yaml` work as-is once `cpom_mount` is set.
+
+### What you can write to
+
+The share holds other people's data, including the previous user's runs under `speersm/`. Server-side permissions are the guard rail: you only have read/write access in two places on it.
+
+- `<username>/` — your own folder at the top level of CPOM (the same `<username>` as in the mount path).
+- `archive/` — shared reference data (the RACMO forcing lives here). It is writable, but treat it as read-only: the code never needs to write there.
+
+Everywhere else (other users' folders such as `speersm/` or `briggsk/`) is read-only to you, so it can't be overwritten by accident.
+
+`CFM_data_path` is where every file the code writes goes — forcing CSVs, CFM output, figures, melt files. Point it at a local folder on the VM (e.g. `/home/<username>/CFM_data`) or at your own folder on the share (`{cpom_mount}/<username>/CFM_data`). Never point it inside `archive/`.
 
 Nothing needs to be copied from `speersm/`: the model regenerates everything there except the in situ data, which has been copied to `hughes54/CFM_data/in_situ`.
 
-### Mount read-only
+### Alternative: mounting from a Mac over SMB
+
+If you're working off a Mac rather than a VM, mount the share yourself. The same server permissions apply, but mounting **read-only** adds a second guard rail (in particular for `archive/`), and output then has to be written to a local `CFM_data_path` and copied up as a separate, deliberate step.
 
 Mount in your home folder: `/Volumes` is owned by root, so `mount_smbfs` can't create a mount point there without admin rights.
 
 ```bash
 diskutil unmount /Volumes/cpom      # only if Finder has already mounted the share (read-write)
 mkdir -p ~/mnt/cpom
-mount_smbfs -o rdonly //hughes54@luna.lancaster.ac.uk/fst/lec/cpom ~/mnt/cpom
+mount_smbfs -o rdonly //<username>@luna.lancaster.ac.uk/fst/lec/cpom ~/mnt/cpom
 ```
 
-It may prompt for your luna password. Check the mount really is read-only before running anything:
+Set `cpom_mount: /Users/<you>/mnt/cpom`. It may prompt for your luna password. Check the mount really is read-only before running anything:
 
 ```bash
-mount | grep cpom                                # should list "read-only"
-touch ~/mnt/cpom/hughes54/CFM_data/test_write    # should fail: "Read-only file system"
+mount | grep cpom                                  # should list "read-only"
+touch ~/mnt/cpom/<username>/CFM_data/test_write    # should fail: "Read-only file system"
 ```
 
 The mount does not reconnect itself after sleep or a network drop. If reads from the share start failing with I/O errors, run `diskutil unmount ~/mnt/cpom` and the `mount_smbfs` line again.
 
-### Copy results to the share
-
-Remount read-write only for the copy, then go straight back to read-only:
+To copy results up, remount read-write only for the copy, then go straight back to read-only:
 
 ```bash
 diskutil unmount ~/mnt/cpom
-mount_smbfs //hughes54@luna.lancaster.ac.uk/fst/lec/cpom ~/mnt/cpom           # read-write
+mount_smbfs //<username>@luna.lancaster.ac.uk/fst/lec/cpom ~/mnt/cpom           # read-write
 
-rsync -avn /Users/alan/code/exageo/CFM_data/ ~/mnt/cpom/hughes54/CFM_data/    # dry run: check the file list
-rsync -av  /Users/alan/code/exageo/CFM_data/ ~/mnt/cpom/hughes54/CFM_data/
+rsync -avn /path/to/local/CFM_data/ ~/mnt/cpom/<username>/CFM_data/    # dry run: check the file list
+rsync -av  /path/to/local/CFM_data/ ~/mnt/cpom/<username>/CFM_data/
 
 diskutil unmount ~/mnt/cpom
-mount_smbfs -o rdonly //hughes54@luna.lancaster.ac.uk/fst/lec/cpom ~/mnt/cpom  # back to read-only
+mount_smbfs -o rdonly //<username>@luna.lancaster.ac.uk/fst/lec/cpom ~/mnt/cpom  # back to read-only
 ```
 
-Keep the trailing `/` on both `rsync` paths, so the folder's contents are copied rather than a nested `CFM_data/CFM_data`. Never add `--delete`: without it `rsync` only adds and updates files under `hughes54/CFM_data` and touches nothing else on the share. Don't run any scripts while the share is read-write.
+Keep the trailing `/` on both `rsync` paths, so the folder's contents are copied rather than a nested `CFM_data/CFM_data`. Never add `--delete`: without it `rsync` only adds and updates files under `<username>/CFM_data` and touches nothing else on the share. Don't run any scripts while the share is read-write.
 
 ## Running
 
