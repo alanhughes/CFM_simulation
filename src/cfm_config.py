@@ -5,6 +5,8 @@ Also loads the site table, sites.yaml (FEAT-002), with sites(), get_site() and b
 
 import calendar
 import datetime
+import sys
+import warnings
 from dataclasses import dataclass, field
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
@@ -151,3 +153,23 @@ def get_site(name: str, path: Path = SITES_FILE) -> Site:
 def batches(path: Path = SITES_FILE) -> Dict[str, List[str]]:
     """The named lists of sites in sites.yaml."""
     return dict(_load_sites_yaml(path).get("batches") or {})
+def cfm_version(label: str | None = None) -> dict:
+    """The CFM version called label in cfm_versions (default_cfm_version if None): its repo, python and label."""
+    versions = config.get("cfm_versions")
+    if versions is None:
+        # config.yaml from before cfm_versions: one CFM checkout, run with the current interpreter
+        warnings.warn("config.yaml has no cfm_versions, using CFM_repo_path. See config.example.yaml.", stacklevel=2)
+        versions = {"default": {"repo": config["CFM_repo_path"], "python": sys.executable}}
+        label = label or "default"
+    else:
+        label = label or config["default_cfm_version"]
+
+    if label not in versions:
+        raise ValueError(f"Unknown CFM version {label!r}. cfm_versions in config.yaml has: {', '.join(versions)}.")
+    version = versions[label]
+    return {
+        "label": label,
+        "repo": version["repo"],
+        "python": version["python"],
+        "allow_uncommitted": version.get("allow_uncommitted", False),
+    }

@@ -5,7 +5,9 @@ Column and grid simulation from the Community Firn Model (CFM). Relies on functi
 
 There is no build step — this is pure Python. Three things need to be in place.
 
-**1. The CFM checkout.** This repo does not vendor or pip-install the CFM. `src/sim/run.py` appends `CFM_repo_path` from `config.yaml` to `sys.path` and imports `RCMpkl_to_spin` and `firn_density_nospin` as flat modules. Clone the CFM alongside this repo and point `CFM_repo_path` at its `CFM_main` folder (not the repo root).
+**1. The CFM checkout.** This repo does not vendor or pip-install the CFM. Clone the CFM alongside this repo and list it under `cfm_versions` in `config.yaml`: a label, the checkout's `CFM_main` folder (not the repo root) and the Python to run it with. You can list several versions and pick one with `run_cfm.py --cfm <label>`. Each run starts a subprocess (`sim.worker`) with that version's Python, which appends the `CFM_main` folder to `sys.path` and imports `RCMpkl_to_spin` and `firn_density_nospin` as flat modules. That is why one process can only use one CFM.
+
+The label is only a name. Each run's `manifest.json` records the CFM's measured commit, its uncommitted changes, the Python version and `pip freeze`. A checkout with uncommitted `.py` changes is refused, so commit local patches to a branch of the CFM checkout. The only exception is a version that sets `allow_uncommitted: true`, kept for the speersm reference test (see `config.example.yaml`).
 
 **2. The environment.** Python >=3.10 with the CFM's own dependency set:
 
@@ -28,7 +30,7 @@ The keys that are machine-specific are the directory block at the top:
 | Key | Meaning |
 | --- | --- |
 | `cpom_mount` | Where the luna CPOM share is mounted (see below) — absolute path, `~` is not expanded |
-| `CFM_repo_path` | The CFM's `CFM_main` folder |
+| `cfm_versions` / `default_cfm_version` | The CFM checkouts (each `CFM_main` folder) with the Python for each, and the one to use by default |
 | `CFM_data_path` | Where the wrapper writes forcing CSVs, model output and figures — a local folder or your own folder on the share (see below) |
 | `MAR_data_path` / `RACMO_data_path` / `RACMO23_data_path` | Where the raw RCM NetCDF forcing files are read from |
 | `in_situ_data_path` | Where the in situ depth-density CSVs are read from |
@@ -137,6 +139,7 @@ Forcing is extracted once per model point, into a cache shared by all CFM versio
 The CFM's own example verifies the model side independently of any forcing data:
 
 ```bash
+CFM_repo_path=/path/to/CommunityFirnModel/CFM_main   # the repo of the CFM version to check
 out=$(mktemp -d)
 python - "$CFM_repo_path" "$out" <<'EOF'
 import json, os, sys

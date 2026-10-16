@@ -6,10 +6,14 @@ are specified in config file.
 Then runs the CFM model using the processed forcing data and configuration from config file. Saves CFM output in
 location specified in config file. Also saves the CFM configuration used for the run as a JSON file in the output directory.
 
+The CFM runs in a subprocess (sim.worker) with the python of the CFM version from --cfm (default_cfm_version if not
+given), as one process can only import one CFM.
+
 Usage:
     python run_cfm.py
     python run_cfm.py --site <site name in sites.yaml> --physrho <physrho_value> --rcm <rcm_name> --liquid <liquid>
     python run_cfm.py ... --force    # rerun even if a complete run exists
+    python run_cfm.py ... --cfm <label>    # CFM version from cfm_versions in config.yaml
 
 Each argument that is not given comes from config.yaml (default_site, cfm_config.physRho, rcm_name, cfm_config.liquid).
 To run at a new location, add it to sites.yaml and sites.lock first.
@@ -17,13 +21,18 @@ To run at a new location, add it to sites.yaml and sites.lock first.
 """
 
 from force.process import ProcessMAR, ProcessRACMO, ProcessRACMO23
-from sim.run import CFMRun
+from sim.identity import check_cfm_identity, measure_cfm_identity
 import argparse
 import logging
+import os
+import subprocess
+import sys
+
+import sim
 
 logging.basicConfig(level=logging.INFO)
 
-from cfm_config import config, get_site
+from cfm_config import cfm_version, config, get_site
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run CFM simulation with optional command line arguments")
@@ -32,6 +41,7 @@ if __name__ == "__main__":
     parser.add_argument("--rcm", type=str, help="RCM name to use for forcing data (e.g., MAR or RACMO)")
     parser.add_argument("--liquid", type=str, help="Meltwater scheme to use (currently only bucket)")
     parser.add_argument("--force", action="store_true", help="Rerun the CFM even if a complete run exists")
+    parser.add_argument("--cfm", type=str, help="CFM version (a label in cfm_versions); default_cfm_version if not given")
 
     args = parser.parse_args()
 
@@ -44,6 +54,10 @@ if __name__ == "__main__":
         f"Site {site.name} (lat={borehole_lat}, lon={borehole_lon}), physrho={physRho}, rcm={rcm_name}, liquid={liquid}"
     )
 
+    # check the CFM checkout now, not after the forcing has been processed (up to 40 minutes for RACMO)
+    version = cfm_version(args.cfm)
+    check_cfm_identity(measure_cfm_identity(version))
+
     if rcm_name == "MAR":
         ProcessMAR(borehole_lat, borehole_lon).process()
     elif rcm_name == "RACMO":
@@ -54,4 +68,12 @@ if __name__ == "__main__":
         logging.error(f"Invalid RCM name: {rcm_name}. Please choose either 'MAR' or 'RACMO' or 'RACMO23'.")
         exit(1)
 
-    CFMRun(borehole_lat, borehole_lon, physRho, rcm_name, liquid, force=args.force).run()
+    # the worker imports this repo's src (the one this script imported), with the CFM version's python
+    src_path = os.path.dirname(os.path.dirname(os.path.abspath(sim.__file__)))
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, [src_path, os.environ.get("PYTHONPATH")]))}
+    command = [version["python"], "-m", "sim.worker", "--lat", str(borehole_lat), "--lon", str(borehole_lon)]
+    command += ["--site", site.name, "--physrho", physRho, "--rcm", rcm_name, "--liquid", liquid, "--cfm", version["label"]]
+    if args.force:
+        command.append("--force")
+    logging.info(f"Running CFM version {version['label']!r} with {version['python']}.")
+    sys.exit(subprocess.run(command, env=env).returncode)
