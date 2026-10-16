@@ -19,25 +19,34 @@ SITES_LOCK_FILE = REPO_ROOT / "sites.lock"
 with open("config.yaml", "r") as file:
     config = yaml.safe_load(file)
 
-# only expand {cpom_mount} - other placeholders (e.g. in force_data_save_path_pattern) are filled in where they're used
+# only expand {cpom_mount} - other placeholders (e.g. {CFM_data_path} in forcing_data_path) are filled in where they're used
 for key, value in config.items():
     if isinstance(value, str):
         config[key] = value.replace("{cpom_mount}", config["cpom_mount"])
 
-# keys that moved from config.yaml to sites.yaml (FEAT-002) - stop, so that an old config.yaml is not used by mistake
-_MOVED_TO_SITES_YAML = ["borehole_sites", "sites_batch_1", "sites_batch_2", "sites_batch_3"]
-_moved = [key for key in _MOVED_TO_SITES_YAML if key in config]
-if _moved:
-    raise KeyError(
-        f"config.yaml contains {', '.join(_moved)}. The sites and batches are now in sites.yaml (FEAT-002). "
-        "Delete these keys from config.yaml."
-    )
-if "borehole_lat" in config or "borehole_lon" in config:
-    raise KeyError(
-        "config.yaml contains borehole_lat/borehole_lon. Replace them with default_site: <a site name in sites.yaml> "
-        "(FEAT-002)."
-    )
+# keys that were removed from config.yaml (FEAT-002), and where they went. An old config.yaml with one of these keys
+# stops here, so that it is not used by mistake.
+REMOVED_CONFIG_KEYS = {
+    "borehole_sites": "moved to the 'sites' table of sites.yaml",
+    "sites_batch_1": "moved to 'batches: batch_1' in sites.yaml",
+    "sites_batch_2": "moved to 'batches: batch_2' in sites.yaml",
+    "sites_batch_3": "moved to 'batches: batch_3' in sites.yaml",
+    "borehole_lat": "replaced by 'default_site' (a site name in sites.yaml) in config.yaml",
+    "borehole_lon": "replaced by 'default_site' (a site name in sites.yaml) in config.yaml",
+    "force_data_save_path_pattern": "replaced by the forcing cache; see 'forcing_data_path' in config.example.yaml",
+}
 
+
+class ConfigError(Exception):
+    """config.yaml is not valid."""
+
+
+_removed = [key for key in REMOVED_CONFIG_KEYS if key in config]
+if _removed:
+    raise ConfigError(
+        "config.yaml contains keys that were removed (FEAT-002). Delete them from config.yaml:\n"
+        + "\n".join(f"  {key}: {REMOVED_CONFIG_KEYS[key]}" for key in _removed)
+    )
 
 def format_coord(value: float) -> str:
     """Format a coordinate to 3 dp, rounding half up on its decimal value (-64.1485 -> "-64.149", not "-64.148")."""

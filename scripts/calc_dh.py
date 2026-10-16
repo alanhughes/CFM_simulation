@@ -15,6 +15,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 from cfm_config import cfm_output_folder, config, sites
+from force.cache import forcing_csv_path
+from force.model_point import model_point
 
 
 def read_output_data(file_path):
@@ -57,14 +59,7 @@ if __name__ == "__main__":
 
     for site, info in borehole_sites.items():
         lat, lon = info.lat, info.lon
-        input_path = config["force_data_save_path_pattern"].format(
-            CFM_data_path=config["CFM_data_path"],
-            rcm_name=rcm_name,
-            borehole_lat=lat,
-            borehole_lon=lon,
-            start_year=start,
-            end_year=end,
-        )
+        input_path = forcing_csv_path(model_point(info, rcm_name), start, end)
         input_df = pd.read_csv(input_path, parse_dates=["TIME"])
         input_df = input_df[input_df["TIME"] >= pd.Timestamp("1980-01-01")]
 

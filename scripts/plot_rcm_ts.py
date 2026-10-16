@@ -21,6 +21,8 @@ import logging
 logging.basicConfig(level=logging.INFO)
 
 from cfm_config import config, sites
+from force.cache import forcing_csv_path
+from force.model_point import model_point
 
 if __name__ == "__main__":
     borehole_sites = sites()
@@ -28,18 +30,9 @@ if __name__ == "__main__":
     racmo_data_dict: dict[str, pd.DataFrame] = {}
 
     for site, info in borehole_sites.items():
-        lat, lon = info.lat, info.lon
-        # Load MAR data for this site
-        mar_data_path = (
-            f"{config['CFM_data_path']}/cfm_input/MAR_{lat}_{lon}_{config['start_year']}_{config['end_year']}.csv"
-        )
-        mar_data_dict[site] = pd.read_csv(mar_data_path)
-
-        # Load RACMO data for this site
-        racmo_data_path = (
-            f"{config['CFM_data_path']}/cfm_input/RACMO_{lat}_{lon}_{config['start_year']}_{config['end_year']}.csv"
-        )
-        racmo_data_dict[site] = pd.read_csv(racmo_data_path)
+        # Load MAR and RACMO data for the model point of this site from the forcing cache
+        mar_data_dict[site] = pd.read_csv(forcing_csv_path(model_point(info, "MAR")))
+        racmo_data_dict[site] = pd.read_csv(forcing_csv_path(model_point(info, "RACMO")))
 
     save_dir = f"{config['CFM_data_path']}/cfm_figures/rcm_comp"
     os.makedirs(save_dir, exist_ok=True)

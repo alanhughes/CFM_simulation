@@ -23,11 +23,12 @@ MAR_data_path: "{cpom_mount}/briggsk/RCM_data/Data/MAR/AIS/27.5km" # MAR forcing
 RACMO_data_path: "{cpom_mount}/archive/MODELS/RCM/RACMO/AIS/Feb_2026/ANT-12/ERA5/evaluation/day" # RACMO forcing data
 RACMO23_data_path: "{cpom_mount}/archive/MODELS/RCM/RACMO/AIS/Mar_2026" # higher resolution RACMO 2.3 forcing data
 
-# In situ depth-density CSVs ({site}_depth-density.csv), used by scripts/plot_density_error.py
+# In situ depth-density CSVs (the "profile" of each site in sites.yaml), used by scripts/plot_density_error.py
 in_situ_data_path: "{cpom_mount}/hughes54/CFM_data/in_situ"
 
-# Naming pattern for generated forcing files - usually no need to change
-force_data_save_path_pattern: "{CFM_data_path}/cfm_input/{rcm_name}_{borehole_lat}_{borehole_lon}_{start_year}_{end_year}.csv"
+# Forcing cache (FEAT-002): one forcing CSV and JSON file for each RCM grid cell, shared by all CFM versions, at
+# {forcing_data_path}/<rcm_name>/<release>/<i>_<j>_<start_year>_<end_year>.csv - optional, default below
+forcing_data_path: "{CFM_data_path}/forcing"
 
 # Period
 start_year: 1979

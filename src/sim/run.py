@@ -11,6 +11,8 @@ import pandas as pd
 from typing import Literal
 
 from cfm_config import cfm_output_folder, config, run_id
+from force.cache import forcing_csv_path
+from force.model_point import model_point_at
 from sim.manifest import COMPLETE, FAILED, RUNNING, is_alive, now, read_manifest, write_manifest
 
 logging.basicConfig(level=logging.INFO)
@@ -194,10 +196,13 @@ class CFMRun:
         """
 
         # Read in forcing data
-        self._force_data_path = force_data_path = f"{self._cfm_input_path}/{self._rcm_name}_{self._borehole_lat}_{self._borehole_lon}_{config['start_year']}_{config['end_year']}.csv"
+        # the forcing CSV of the model point in the forcing cache (FEAT-002)
+        self._force_data_path = force_data_path = forcing_csv_path(
+            model_point_at(self._borehole_lat, self._borehole_lon, self._rcm_name)
+        )
         if not os.path.exists(force_data_path):
             raise FileNotFoundError(
-                f"Forcing data file not found: {force_data_path}. Run read_force_data.py to generate the file."
+                f"Forcing data file not found: {force_data_path}. Run scripts/run_cfm.py to generate the file."
             )
         self._force_data = pd.read_csv(force_data_path, index_col=0, parse_dates=True)
         logging.info(f"Forcing data read from {force_data_path}.")
