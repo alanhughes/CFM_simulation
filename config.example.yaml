@@ -126,6 +126,21 @@ MAR_temp_vars:
   - TTZ
   - TI1
 
+## Fast RACMO extraction and local forcing cache (FEAT-003, src/force/extract.py). RACMO and RACMO23 always use it.
+## Every key here is optional; the values shown are the defaults.
+forcing_processes: 8 # worker processes, each reads one file at a time; each needs memory for 64 full maps
+forcing_cache: true # keep all cells in a box around the sites in a local cache.h5, so nearby sites need no new pass
+# folder of cache.h5, next to the forcing CSVs; placeholders: CFM_data_path, forcing_data_path, rcm_name, release
+forcing_cache_dir: "{forcing_data_path}/{rcm_name}/{release}"
+forcing_cache_margin: {lat: 0.5, lon: 1.0} # degrees around the active sites in sites.yaml, approximately 55 km at 67S
+## Unit factors per CFM column, kg/m2/s -> mmWE/day. A list is applied one factor at a time in float32, which gives
+## the same values as the old code (x * 60 * 60 * 24); a single 86400 differs by up to 1 unit in the last place.
+RACMO_to_CFM_unit_factors:
+  SUBLIM: [60, 60, 24]
+  RAIN: [60, 60, 24]
+  BDOT: [60, 60, 24]
+  SMELT: [60, 60, 24]
+
 ### ----------------- CFM Simulation ----------------- ###
 
 ## model run parameters

@@ -3,7 +3,6 @@ import os
 import json
 from typing import Dict, List, Optional
 
-import numpy as np
 import pandas as pd
 import xarray as xr
 from abc import ABC, abstractmethod
@@ -119,27 +118,34 @@ class ProcessBase(ABC):
             self._input_dataframe = pd.concat(borehole_dataframes)
             logging.info("...borehole data processed successfully.")
 
-            check_date_coverage(self._input_dataframe.index, start_year, end_year, dataset)
+            self.save_forcing(save_path, self._input_dataframe, _source_files(self._daily_xr))
 
-            # write to a temporary name first, so that a stopped run leaves no CSV that looks complete
-            os.makedirs(os.path.dirname(save_path), exist_ok=True)
-            tmp_path = f"{save_path}.tmp"
-            self._input_dataframe.to_csv(tmp_path)
-            json_path = write_forcing_json(
-                tmp_path,
-                self.model_point,
-                self._input_dataframe,
-                source_files=_source_files(self._daily_xr),
-                column_map=config[self._map_name],
-                unit_factors=self._unit_factors,
-                start_year=start_year,
-                end_year=end_year,
-                site_lat=self._borehole_lat,
-                site_lon=self._borehole_lon,
-            )
-            os.replace(json_path, forcing_json_path(save_path))
-            os.replace(tmp_path, save_path)
-            logging.info(f"Borehole RCM data saved to {save_path}")
+    def save_forcing(self, save_path: str, df: pd.DataFrame, source_files: List[str], extra: Optional[dict] = None):
+        """Check the dates of the forcing data (BUG-003), then save it as a CSV with its JSON file."""
+        start_year, end_year = config["start_year"], config["end_year"]
+        dataset = f"{self._rcm_name} ({self.model_point.release})"
+        check_date_coverage(df.index, start_year, end_year, dataset)
+
+        # write to a temporary name first, so that a stopped run leaves no CSV that looks complete
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        tmp_path = f"{save_path}.tmp"
+        df.to_csv(tmp_path)
+        json_path = write_forcing_json(
+            tmp_path,
+            self.model_point,
+            df,
+            source_files=source_files,
+            column_map=config[self._map_name],
+            unit_factors=self._unit_factors,
+            start_year=start_year,
+            end_year=end_year,
+            site_lat=self._borehole_lat,
+            site_lon=self._borehole_lon,
+            extra=extra,
+        )
+        os.replace(json_path, forcing_json_path(save_path))
+        os.replace(tmp_path, save_path)
+        logging.info(f"Borehole RCM data saved to {save_path}")
 
     @staticmethod
     def _check_existing(save_path: str, start_year: int, end_year: int, dataset: str) -> None:
@@ -159,10 +165,10 @@ class ProcessBase(ABC):
         """Abstract method to read in data, to be implemented by subclasses."""
         pass
 
-    @abstractmethod
     def _xr_to_input_dataframe(self, xr_data: xr.Dataset) -> pd.DataFrame:
-        """Abstract method to convert xarray Dataset to pandas DataFrame, to be implemented by subclasses."""
-        pass
+        """Convert an xarray Dataset to a pandas DataFrame. ProcessBase.process uses this method. ProcessMAR
+        implements it. ProcessRACMO and ProcessRACMO23 do not, because they use process_fast (FEAT-003)."""
+        raise NotImplementedError(f"{type(self).__name__} does not make forcing with the xarray code")
 
 
 class ProcessMAR(ProcessBase):
@@ -303,18 +309,22 @@ class ProcessRACMO(ProcessBase):
         self._snowfall_name = "prsn"  # this changes between RACMO versions
 
     def process(self) -> None:
-        """
-        Process the RACMO dataset to extract data at the borehole location.
+        """Write the forcing CSV and JSON file of the borehole location, with the h5py extraction (FEAT-003).
 
-        Returns:
-            xr.Dataset: RACMO data at the borehole location.
+        The extraction reads the RACMO files in one parallel pass, through the local cache around the sites. It stops
+        with ForcingCoverageError if the files do not include all the years from start_year to end_year (BUG-003).
         """
 
-        super().process(self._save_path)
+        from .extract import process_fast
+
+        process_fast([self])
 
     def _read_data(self) -> List[xr.Dataset]:
         """Read in the RACMO .nc files from the specified data path in config, filtering for files which contain the
         variables we want to read and which contain a year between start and end year in config.
+
+        This reads the full maps. MeltRACMO and the spatial plots use it. The forcing for a borehole does not use it,
+        because process uses the h5py extraction (FEAT-003).
 
         Returns:
             List[xr.Dataset]: List of xarray Datasets for each batch of years of RACMO data
@@ -354,67 +364,6 @@ class ProcessRACMO(ProcessBase):
         merged_dataset = xr.merge(datasets)
 
         return merged_dataset
-
-    def _xr_to_input_dataframe(self, xr_data: xr.Dataset) -> pd.DataFrame:
-        """Takes xarray Data for a given batch of years of RACMO data
-
-        Args:
-            xr_data (xr.Dataset): RACMO data for a given batch of years, containing all variables we want to read.
-        """
-
-        # get indices of closest grid point to borehole
-        y_idx, x_idx, _ = nearest_cell(xr_data["lat"], xr_data["lon"], self._borehole_lat, self._borehole_lon)
-        self._check_cell(y_idx, x_idx)
-
-        # find data at borehole location
-        # can use any coordinate as the indexing is the same for all
-        borehole_data = xr_data.isel(rlat=y_idx, rlon=x_idx)
-
-        # drop anything not in var_to_read
-        borehole_data = borehole_data.drop_vars(
-            [var for var in borehole_data.data_vars if var not in self._var_to_read]
-        )
-
-        # convert to dataframe
-        borehole_df = borehole_data.to_dataframe().reset_index()
-
-        # ensure mass fluxes are positive
-        borehole_df["pr"] = np.clip(borehole_df["pr"], a_min=0, a_max=None)
-        borehole_df[self._snowfall_name] = np.clip(borehole_df[self._snowfall_name], a_min=0, a_max=None)
-        borehole_df["mltgl"] = np.clip(borehole_df["mltgl"], a_min=0, a_max=None)
-
-        # get rf and alb
-        borehole_df["rf"] = borehole_df["pr"] - borehole_df[self._snowfall_name]
-        borehole_df["alb"] = borehole_df["rsusgl"] / borehole_df["rsds"]
-
-        # rename columns to match CFM input column names
-        mapping = config[self._map_name]
-        borehole_df.rename(columns=mapping, inplace=True)
-        borehole_df.set_index("time", inplace=True)
-
-        # drop unneeded columns
-        borehole_df = borehole_df[list(mapping.values())]
-
-        # only keep dates in the time range
-        borehole_df = borehole_df[
-            (borehole_df.index.year >= config["start_year"]) & (borehole_df.index.year <= config["end_year"])
-        ]
-
-        # multiply all mass fluxes by 60*60*24 to convert from kg/m2/s to mmWE/day
-        # don't include melt here because it seems to already be in daily totals
-        mass_flux_columns = ["SUBLIM", "RAIN", "BDOT", "SMELT"]
-
-        for col in mass_flux_columns:
-            if col in borehole_df.columns:
-                borehole_df[col] = borehole_df[col] * 60 * 60 * 24
-
-        # make sure rain is positive
-        borehole_df["RAIN"] = np.clip(borehole_df["RAIN"], a_min=0, a_max=None)
-
-        # remove duplicate times
-        borehole_df = borehole_df[~borehole_df.index.duplicated(keep="first")]
-
-        return borehole_df
 
 
 class ProcessRACMO23(ProcessRACMO):
