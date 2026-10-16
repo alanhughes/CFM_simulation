@@ -9,6 +9,10 @@ Usage (from the repo root):
     python scripts/extract_forcing.py                       # rcm_name from config, all active sites
     python scripts/extract_forcing.py --rcm RACMO23 --sites CI-0 WI-70
     python scripts/extract_forcing.py --rcm RACMO --no-cache --processes 4
+    python scripts/extract_forcing.py --rcm RACMO --sites CI-0 WI-70 --end-year 2023   # ANT-12 stops in 2023
+
+--start-year and --end-year replace start_year and end_year of config.yaml for this process only. They set the years
+of the CSV name (<i>_<j>_<start>_<end>.csv) and of the date check (BUG-003).
 """
 
 import argparse
@@ -31,7 +35,7 @@ def select_sites(names: Optional[Sequence[str]] = None) -> Dict[str, Site]:
     return sites()
 
 
-def main() -> None:
+def main(argv: Optional[Sequence[str]] = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument(
         "--rcm", default=config["rcm_name"], choices=sorted(DATASETS), help="dataset (default: rcm_name)"
@@ -40,7 +44,18 @@ def main() -> None:
     parser.add_argument("--no-cache", action="store_true", help="read the share directly, do not use cache.h5")
     parser.add_argument("--processes", type=int, help="worker processes (default: forcing_processes, or 8)")
     parser.add_argument("--overwrite", action="store_true", help="write the CSVs again if they exist")
-    args = parser.parse_args()
+    parser.add_argument("--start-year", type=int, help="first year (default: start_year in config.yaml)")
+    parser.add_argument("--end-year", type=int, help="last year (default: end_year in config.yaml)")
+    args = parser.parse_args(argv)
+
+    # process_fast, ExtractSettings and the CSV path all read the years from config
+    if args.start_year is not None:
+        config["start_year"] = args.start_year
+    if args.end_year is not None:
+        config["end_year"] = args.end_year
+    if config["start_year"] > config["end_year"]:
+        parser.error(f"start year {config['start_year']} is after end year {config['end_year']}")
+    logging.info(f"{args.rcm}: years {config['start_year']}-{config['end_year']}")
 
     selected = select_sites(args.sites)
     processors = [PROCESSORS[args.rcm](site.lat, site.lon) for site in selected.values()]
