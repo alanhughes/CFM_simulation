@@ -1,19 +1,87 @@
-"""The run manifest: a manifest.json in each CFM output folder that records what the run was and whether it completed.
+"""The run manifest, the run hash and the run folder (FEAT-001).
 
-A run is only treated as done when its manifest says "complete". An empty folder, or one left by a run that crashed or
-was killed, no longer blocks a new run (BUG-004).
+Each run has a manifest.json in its folder that records what the run was and whether it completed. A run is only
+treated as done when its manifest says "complete" with the same run hash. An empty folder, or one left by a run that
+crashed or was killed, does not block a new run (BUG-004).
+
+The run hash is the SHA-256 of a canonical JSON document of everything that changes the results (run_hash_inputs). Its
+first 8 characters name the run folder:
+
+    <CFM_data_path>/runs/<ModelPoint.tag>/<physRho>_<liquid>_<start>-<end>/<cfm-label>/<hash8>/
 """
 
+import hashlib
 import json
 import os
 import socket
 from datetime import datetime, timezone
+
+from cfm_config import config
 
 MANIFEST_NAME = "manifest.json"
 
 RUNNING = "running"
 COMPLETE = "complete"
 FAILED = "failed"
+
+# a change to the content of run_hash_inputs() must change this number, so that the old and new hashes differ
+HASH_VERSION = 1
+
+# the wrapper parameters in config.yaml that change the results
+WRAPPER_PARAMS = ("start_year", "end_year", "spin_end_year", "sublim_sf", "rho_bottom")
+
+# cfm_config keys that are paths, not physics. resultsFolder is the run folder, which contains the hash
+_UNHASHED_CFM_CONFIG_KEYS = ("resultsFolder",)
+
+# the keys of the measured CFM identity that change the results. Not the label, repo or python paths: they are names
+_HASHED_CFM_IDENTITY_KEYS = ("commit", "code_diff_sha256", "python_version", "pip_freeze")
+
+HASH_LENGTH = 8
+
+
+def run_hash_inputs(
+    cfm_config: dict,
+    wrapper_params: dict,
+    model_point_tag: str,
+    rcm_release: str,
+    forcing_csv_sha256: str,
+    cfm_identity: dict,
+    wrapper_identity: dict,
+) -> dict:
+    """The document that the run hash is made from. It has no times, host, pid, paths or site name."""
+    return {
+        "hash_version": HASH_VERSION,
+        "cfm_config": {key: value for key, value in cfm_config.items() if key not in _UNHASHED_CFM_CONFIG_KEYS},
+        "wrapper_params": {key: wrapper_params[key] for key in WRAPPER_PARAMS},
+        "model_point": {"tag": model_point_tag, "release": rcm_release},
+        "forcing_csv_sha256": forcing_csv_sha256,
+        "cfm": {key: cfm_identity[key] for key in _HASHED_CFM_IDENTITY_KEYS},
+        "wrapper_src_tree": wrapper_identity["src_tree"],
+    }
+
+
+def run_hash(inputs: dict) -> str:
+    """SHA-256 of the canonical JSON of run_hash_inputs(): sorted keys, no spaces."""
+    canonical = json.dumps(inputs, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def runs_root() -> str:
+    """The root folder of all the runs."""
+    return os.path.join(config["CFM_data_path"], "runs")
+
+
+def run_folder(
+    model_point_tag: str, phys_rho: str, liquid: str, start_year: int, end_year: int, cfm_label: str, hash_: str
+) -> str:
+    """Folder of one run: runs/<tag>/<physRho>_<liquid>_<start>-<end>/<cfm-label>/<hash8>/."""
+    return os.path.join(
+        runs_root(),
+        model_point_tag,
+        f"{phys_rho}_{liquid}_{start_year}-{end_year}",
+        cfm_label,
+        hash_[:HASH_LENGTH],
+    )
 
 
 def now() -> str:

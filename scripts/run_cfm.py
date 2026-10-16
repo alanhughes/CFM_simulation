@@ -3,8 +3,9 @@ Reads in and processes MAR forcing data at specified borehole location, then sav
 processed data directory as pandas dataframe. Borehole location, dataframe column names, and save location
 are specified in config file.
 
-Then runs the CFM model using the processed forcing data and configuration from config file. Saves CFM output in
-location specified in config file. Also saves the CFM configuration used for the run as a JSON file in the output directory.
+Then runs the CFM model using the processed forcing data and configuration from config file. Saves the CFM output, the
+CFM configuration JSON and the manifest in {CFM_data_path}/runs/<model point>/<physRho>_<liquid>_<start>-<end>/<cfm label>/<hash8>/
+(FEAT-001). A run with the same hash that is complete is skipped.
 
 The CFM runs in a subprocess (sim.worker) with the python of the CFM version from --cfm (default_cfm_version if not
 given), as one process can only import one CFM.
@@ -21,7 +22,7 @@ To run at a new location, add it to sites.yaml and sites.lock first.
 """
 
 from force.process import ProcessMAR, ProcessRACMO, ProcessRACMO23
-from sim.identity import check_cfm_identity, measure_cfm_identity
+from sim.identity import check_cfm_identity, check_wrapper_identity, measure_cfm_identity, wrapper_identity
 import argparse
 import logging
 import os
@@ -54,9 +55,10 @@ if __name__ == "__main__":
         f"Site {site.name} (lat={borehole_lat}, lon={borehole_lon}), physrho={physRho}, rcm={rcm_name}, liquid={liquid}"
     )
 
-    # check the CFM checkout now, not after the forcing has been processed (up to 40 minutes for RACMO)
+    # check the CFM checkout and src/ now, not after the forcing has been processed (up to 40 minutes for RACMO)
     version = cfm_version(args.cfm)
     check_cfm_identity(measure_cfm_identity(version))
+    check_wrapper_identity(wrapper_identity())
 
     if rcm_name == "MAR":
         ProcessMAR(borehole_lat, borehole_lon).process()
