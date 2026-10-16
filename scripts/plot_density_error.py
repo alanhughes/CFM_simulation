@@ -5,14 +5,15 @@ could be integrated into src/plot/results.py if we decide to keep these plots
 Usage:
     python density_error.py
 
-Requires specification of which sites to plot in borehole_sites dictionary, which physical densification schemes
+Plots the active sites in sites.yaml, each with its own model time windows (the "windows" key). A site with no
+windows stops the script with an error (BUG-005). Requires the physical densification schemes
 to plot in physrho_values list, and the RCM and melt scheme to use for loading the correct simulation output.
 
 The script will
 - load in situ density data for each site
 - load the corresponding CFM simulation output for each physical densification scheme
 - interpolate the model density to the in situ depth grid
-- calculate the mean model density across all time steps in the austral summers of 2014 and 2015
+- calculate the mean model density across all time steps in the windows of the site
 - and plot the difference between the model and in situ density profiles with depth.
 
 The resulting plots will be saved to the specified figure path.
@@ -20,19 +21,19 @@ The resulting plots will be saved to the specified figure path.
 """
 
 import matplotlib.pyplot as plt
-from typing import Dict, Tuple
 import xarray as xr
 import pandas as pd
 import numpy as np
 import logging
 import os
 
-from cfm_config import cfm_output_folder, config
+from cfm_config import cfm_output_folder, config, sites
+from force.model_point import model_point_label, shared_model_points
 
 logging.basicConfig(level=logging.INFO)
 
 if __name__ == "__main__":
-    borehole_sites: Dict[str, Tuple[float, float]] = config["borehole_sites"]
+    borehole_sites = sites()
     physrho_values = [
         "GSFC2020",
         "HLdynamic",
@@ -43,54 +44,19 @@ if __name__ == "__main__":
     rcm_name = config["rcm_name"]
     melt_scheme = config["cfm_config"]["liquid"]
 
-    sites_batch_1 = config["sites_batch_1"]
-    sites_batch_2 = config["sites_batch_2"]
-    sites_batch_3 = config["sites_batch_3"]
+    # model point of each site; also the inactive sites, to show all the sites that share a grid cell (FEAT-002)
+    model_points = shared_model_points(sites(active_only=False), rcm_name)
 
     save_dir = f"{config['CFM_data_path']}/cfm_figures/errors"
     os.makedirs(save_dir, exist_ok=True)
 
-    # period1 = [
-    #     2009 + 11 / 12,
-    #     2010 + 1 / 12,
-    # ]
-    # period2 = [
-    #     2009 + 11 / 12,
-    #     2010 + 1 / 12,
-    # ]
-
-    # period1 = [
-    #     2009 + 11 / 12,
-    #     2010 + 1 / 12,
-    # ]
-    # period2 = [
-    #     2009 + 11 / 12,
-    #     2010 + 1 / 12,
-    # ]
-
-    for site, (lat, lon) in borehole_sites.items():
-        if site in sites_batch_1:
-            period1 = [
-                2014 + 11 / 12,
-                2015 + 2 / 12,
-            ]  # astrochronological summer of 2014 (December 2014 - February 2015)
-            period2 = [
-                2015 + 11 / 12,
-                2016 + 2 / 12,
-            ]  # astrochronological summer of 2015 (December 2015 - February 2016)
-        elif site in sites_batch_2:
-            period1 = period2 = [
-                2009 + 11 / 12,
-                2010 + 1 / 12,
-            ]
-        elif site in sites_batch_3:
-            period1 = period2 = [
-                2022 + 11 / 12,
-                2023 + 1 / 12,
-            ]
+    for site, info in borehole_sites.items():
+        lat, lon = info.lat, info.lon
+        # model time windows of this site, in decimal years (sites.yaml) - stops with an error if it has none (BUG-005)
+        windows = info.decimal_year_windows()
 
         # load in in situ density data for this site
-        in_situ_path = f"{config['in_situ_data_path']}/{site}_depth-density.csv"
+        in_situ_path = f"{config['in_situ_data_path']}/{info.profile_file}"
         in_situ_data = pd.read_csv(in_situ_path)
         # put in situ data on same depth grid as model output
         in_situ_depth = pd.to_numeric(in_situ_data["Depth"].values)
@@ -110,14 +76,11 @@ if __name__ == "__main__":
                     "DIP": ds["DIP"][1:, 1:],
                 }
 
-            # only keep data from astrochronological summers
-            period1_mask = (results_dict["model_time_vector"] >= period1[0]) & (
-                results_dict["model_time_vector"] <= period1[1]
-            )
-            period2_mask = (results_dict["model_time_vector"] >= period2[0]) & (
-                results_dict["model_time_vector"] <= period2[1]
-            )
-            summer_mask = period1_mask | period2_mask
+            # only keep data from the measurement windows of this site
+            model_time = results_dict["model_time_vector"]
+            summer_mask = np.zeros(model_time.shape, dtype=bool)
+            for start, end in windows:
+                summer_mask |= ((model_time >= start) & (model_time <= end)).values
 
             # only keep density data from astrochronological summers
             density_summer = results_dict["density"][summer_mask, :]
@@ -159,7 +122,7 @@ if __name__ == "__main__":
         plt.gca().invert_yaxis()
         plt.xlabel("Density (kg/m³)")
         plt.ylabel("Depth (m)")
-        plt.title(f"Density vs Depth for {site}")
+        plt.title(f"Density vs Depth for {site}\n{model_point_label(site, model_points)}", fontsize=9)
         plt.legend()
         plt.grid()
         plt.savefig(f"{save_dir}/{site}_{melt_scheme}_{rcm_name}.png")

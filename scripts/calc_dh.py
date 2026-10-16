@@ -10,13 +10,13 @@ Usage:
 """
 
 import os
-from typing import Dict, Tuple
-
 import xarray as xr
 import pandas as pd
 import matplotlib.pyplot as plt
 
-from cfm_config import cfm_output_folder, config
+from cfm_config import cfm_output_folder, config, sites
+from force.cache import forcing_csv_path
+from force.model_point import model_point, model_point_label, shared_model_points
 
 
 def read_output_data(file_path):
@@ -48,24 +48,21 @@ def read_output_data(file_path):
 
 
 if __name__ == "__main__":
-    borehole_sites: Dict[str, Tuple[float, float]] = config["borehole_sites"]
+    borehole_sites = sites()
     phys_rho_options = ("GSFC2020", "HLdynamic", "Crocus", "Barnola1991", "Ligtenberg2011")
     start, end = config["start_year"], config["end_year"]
     rcm_name = config["rcm_name"]
     liquid = config["cfm_config"]["liquid"]
 
+    # model point of each site; also the inactive sites, to show all the sites that share a grid cell (FEAT-002)
+    model_points = shared_model_points(sites(active_only=False), rcm_name)
+
     save_dir = f"{config['CFM_data_path']}/cfm_figures/dh_dt"
     os.makedirs(save_dir, exist_ok=True)
 
-    for site, (lat, lon) in borehole_sites.items():
-        input_path = config["force_data_save_path_pattern"].format(
-            CFM_data_path=config["CFM_data_path"],
-            rcm_name=rcm_name,
-            borehole_lat=lat,
-            borehole_lon=lon,
-            start_year=start,
-            end_year=end,
-        )
+    for site, info in borehole_sites.items():
+        lat, lon = info.lat, info.lon
+        input_path = forcing_csv_path(model_point(info, rcm_name), start, end)
         input_df = pd.read_csv(input_path, parse_dates=["TIME"])
         input_df = input_df[input_df["TIME"] >= pd.Timestamp("1980-01-01")]
 
@@ -86,7 +83,9 @@ if __name__ == "__main__":
 
         plt.xlabel("Time")
         plt.ylabel("dh/dt (m/day)")
-        plt.title(f"Rate of change of ice thickness (dh/dt) over time at {site}")
+        plt.title(
+            f"Rate of change of ice thickness (dh/dt) over time at {site}\n{model_point_label(site, model_points)}"
+        )
         plt.legend()
         plt.grid()
         plt.savefig(f"{save_dir}/dh_dt_time_series_{site}_{liquid}_{rcm_name}.png", dpi=300)

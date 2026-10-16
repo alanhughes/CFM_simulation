@@ -1,6 +1,7 @@
 import logging
 import os
-from typing import List
+import json
+from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -9,10 +10,45 @@ from abc import ABC, abstractmethod
 
 from cfm_config import config
 
+from .cache import check_date_coverage, forcing_csv_path, forcing_json_path, write_forcing_json
+from .grid import nearest_cell
+from .model_point import ModelPoint, model_point_at
+
 logging.basicConfig(level=logging.INFO)
 
 
+def _time_values(datasets: List[xr.Dataset], start_year: int, end_year: int) -> pd.DatetimeIndex:
+    """The time coordinates of the RCM datasets in the year range. Reads the time coordinates only."""
+    times = []
+    for ds in datasets:
+        name = next((name for name in ("time", "TIME") if name in ds.coords), None)
+        if name is not None:
+            times.append(pd.DatetimeIndex(ds[name].values))
+    if not times:
+        return pd.DatetimeIndex([])
+    index = times[0].append(times[1:])
+    return index[(index.year >= start_year) & (index.year <= end_year)]
+
+
+def _source_files(datasets: List[xr.Dataset]) -> List[str]:
+    """The files that the RCM datasets were read from, from the encoding of their variables."""
+    sources = set()
+    for ds in datasets:
+        if "source" in ds.encoding:
+            sources.add(ds.encoding["source"])
+        for var in ds.variables.values():
+            if "source" in var.encoding:
+                sources.add(var.encoding["source"])
+    return sorted(sources)
+
+
 class ProcessBase(ABC):
+    # name of the RCM, the config key of its column map and the unit changes that _xr_to_input_dataframe makes, for the
+    # JSON file of the forcing cache - set by each subclass
+    _rcm_name: str = None
+    _map_name: str = None
+    _unit_factors: Dict[str, str] = {}
+
     def __init__(self, borehole_lat: float, borehole_lon: float) -> None:
         """Base class for processing data at specified borehole coordinates. Subclasses should implement the process
         method to read in and process data to their relevant save directory.
@@ -29,31 +65,94 @@ class ProcessBase(ABC):
         self._y_idx: int = 0
         self._daily_xr: List[xr.Dataset] = None
         self._borehole_data: xr.Dataset = None
+        self._model_point: Optional[ModelPoint] = None
+
+    @property
+    def model_point(self) -> ModelPoint:
+        """The RCM grid cell of the borehole location (FEAT-002). Found when it is first used."""
+        if self._model_point is None:
+            self._model_point = model_point_at(self._borehole_lat, self._borehole_lon, self._rcm_name)
+        return self._model_point
+
+    @property
+    def _save_path(self) -> str:
+        """The forcing CSV of the model point in the forcing cache (FEAT-002)."""
+        return forcing_csv_path(self.model_point)
+
+    def _check_cell(self, y_idx: int, x_idx: int) -> None:
+        """Make sure that the data comes from the cell that names the forcing CSV."""
+        mp = self.model_point
+        if (y_idx, x_idx) != (mp.i, mp.j):
+            raise ValueError(
+                f"{self._rcm_name}: the nearest cell in the data is ({y_idx}, {x_idx}), but the model point from "
+                f"the coordinate file is ({mp.i}, {mp.j}). The files in the data path do not use one grid."
+            )
 
     def process(self, save_path: str) -> None:
         """
-        Process the RCM dataset to extract data at the borehole location.
-
-        Returns:
-            xr.Dataset: RCM data at the borehole location.
+        Process the RCM dataset to extract data at the borehole location, and save it with a JSON file that records
+        its source. Stops with ForcingCoverageError if the data does not include all the years from start_year to
+        end_year (BUG-003).
         """
+
+        start_year, end_year = config["start_year"], config["end_year"]
+        dataset = f"{self._rcm_name} ({self.model_point.release})"
 
         if os.path.exists(save_path):
             logging.info(f"Processed RCM data already exists at {save_path}. Skipping processing.")
+            self._check_existing(save_path, start_year, end_year, dataset)
 
         else:
+            logging.info(
+                f"Model point {self.model_point.tag}: cell centre ({self.model_point.cell_lat:.4f}, "
+                f"{self.model_point.cell_lon:.4f}), {self.model_point.distance_km:.1f} km from the borehole"
+            )
             logging.info("Reading RCM data...")
             self._daily_xr = self._read_data()
             logging.info("...RCM data read successfully.")
+
+            # stop before the long extraction if a year is not in the files (BUG-003)
+            check_date_coverage(_time_values(self._daily_xr, start_year, end_year), start_year, end_year, dataset)
 
             logging.info("Processing borehole data...")
             borehole_dataframes = [self._xr_to_input_dataframe(xr_data) for xr_data in self._daily_xr]
             self._input_dataframe = pd.concat(borehole_dataframes)
             logging.info("...borehole data processed successfully.")
 
+            check_date_coverage(self._input_dataframe.index, start_year, end_year, dataset)
+
+            # write to a temporary name first, so that a stopped run leaves no CSV that looks complete
             os.makedirs(os.path.dirname(save_path), exist_ok=True)
-            self._input_dataframe.to_csv(save_path)
+            tmp_path = f"{save_path}.tmp"
+            self._input_dataframe.to_csv(tmp_path)
+            json_path = write_forcing_json(
+                tmp_path,
+                self.model_point,
+                self._input_dataframe,
+                source_files=_source_files(self._daily_xr),
+                column_map=config[self._map_name],
+                unit_factors=self._unit_factors,
+                start_year=start_year,
+                end_year=end_year,
+                site_lat=self._borehole_lat,
+                site_lon=self._borehole_lon,
+            )
+            os.replace(json_path, forcing_json_path(save_path))
+            os.replace(tmp_path, save_path)
             logging.info(f"Borehole RCM data saved to {save_path}")
+
+    @staticmethod
+    def _check_existing(save_path: str, start_year: int, end_year: int, dataset: str) -> None:
+        """Check the dates of a forcing CSV in the cache: from its JSON file, or from the CSV if it has no JSON."""
+        json_path = forcing_json_path(save_path)
+        if os.path.exists(json_path):
+            with open(json_path) as file:
+                record = json.load(file)
+            dates = pd.date_range(record["first_date"], record["last_date"], freq="D")
+            check_date_coverage(dates, start_year, end_year, dataset)
+        else:
+            logging.warning(f"{save_path} has no JSON file, so its source is not known.")
+            check_date_coverage(pd.read_csv(save_path, index_col=0).index, start_year, end_year, dataset)
 
     @abstractmethod
     def _read_data(self) -> List[xr.Dataset]:
@@ -79,14 +178,8 @@ class ProcessMAR(ProcessBase):
         super().__init__(borehole_lat, borehole_lon)
 
         self._rcm_name: str = "MAR"
-        self._save_path: str = config["force_data_save_path_pattern"].format(
-            CFM_data_path=config["CFM_data_path"],
-            rcm_name=self._rcm_name,
-            borehole_lat=borehole_lat,
-            borehole_lon=borehole_lon,
-            start_year=config["start_year"],
-            end_year=config["end_year"],
-        )
+        self._map_name = "MAR_to_CFM_column_map"
+        self._unit_factors = {"TSKIN": "+273.15 (degC to K)", "T2m": "+273.15 (degC to K)"}
 
     def process(self) -> None:
         """
@@ -129,10 +222,8 @@ class ProcessMAR(ProcessBase):
         logging.info(f"Processing XR data at year {xr_data['TIME'].dt.year.values[0]}")
 
         # get indices of closest grid point to borehole
-        lat_diff = np.abs(xr_data["LAT"] - self._borehole_lat)
-        lon_diff = np.abs(xr_data["LON"] - self._borehole_lon)
-        distance = np.sqrt(lat_diff**2 + lon_diff**2)
-        y_idx, x_idx = np.unravel_index(distance.argmin(), distance.shape)
+        y_idx, x_idx, _ = nearest_cell(xr_data["LAT"], xr_data["LON"], self._borehole_lat, self._borehole_lon)
+        self._check_cell(y_idx, x_idx)
 
         # find coordinate names for X/Y (prefer MAR defaults, fallback to X/Y)
         x_coord_candidates = ["X18_215", "X"]
@@ -198,17 +289,16 @@ class ProcessRACMO(ProcessBase):
         super().__init__(borehole_lat, borehole_lon)
 
         self._rcm_name: str = "RACMO"
-        self._save_path: str = config["force_data_save_path_pattern"].format(
-            CFM_data_path=config["CFM_data_path"],
-            rcm_name=self._rcm_name,
-            borehole_lat=borehole_lat,
-            borehole_lon=borehole_lon,
-            start_year=config["start_year"],
-            end_year=config["end_year"],
-        )
         self._var_to_read = list(config["RACMO_to_CFM_column_map"].keys())
         self._var_to_read += config["RACMO_additional_vars"]
         self._map_name = "RACMO_to_CFM_column_map"
+        self._unit_factors = {
+            "SUBLIM": "*86400 (kg m-2 s-1 to mm w.e. day-1)",
+            "RAIN": "*86400 (kg m-2 s-1 to mm w.e. day-1); RAIN = pr - snowfall, pr and snowfall clipped at 0",
+            "BDOT": "*86400 (kg m-2 s-1 to mm w.e. day-1); clipped at 0",
+            "SMELT": "*86400 (kg m-2 s-1 to mm w.e. day-1); clipped at 0",
+            "ALBEDO": "rsusgl / rsds",
+        }
 
         self._snowfall_name = "prsn"  # this changes between RACMO versions
 
@@ -273,10 +363,8 @@ class ProcessRACMO(ProcessBase):
         """
 
         # get indices of closest grid point to borehole
-        lat_diff = np.abs(xr_data["lat"] - self._borehole_lat)
-        lon_diff = np.abs(xr_data["lon"] - self._borehole_lon)
-        distance = np.sqrt(lat_diff**2 + lon_diff**2)
-        y_idx, x_idx = np.unravel_index(distance.argmin(), distance.shape)
+        y_idx, x_idx, _ = nearest_cell(xr_data["lat"], xr_data["lon"], self._borehole_lat, self._borehole_lon)
+        self._check_cell(y_idx, x_idx)
 
         # find data at borehole location
         # can use any coordinate as the indexing is the same for all
@@ -342,14 +430,6 @@ class ProcessRACMO23(ProcessRACMO):
         super().__init__(borehole_lat, borehole_lon)
 
         self._rcm_name: str = "RACMO23"
-        self._save_path: str = config["force_data_save_path_pattern"].format(
-            CFM_data_path=config["CFM_data_path"],
-            rcm_name=self._rcm_name,
-            borehole_lat=borehole_lat,
-            borehole_lon=borehole_lon,
-            start_year=config["start_year"],
-            end_year=config["end_year"],
-        )
         self._var_to_read = list(config["RACMO23_to_CFM_column_map"].keys())
         self._var_to_read += config["RACMO_additional_vars"]
 

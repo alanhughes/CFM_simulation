@@ -1,0 +1,96 @@
+# Site table (FEAT-002). Git tracks this file, so all users have the same sites.
+#
+# A site is a location with in situ measurements. The CFM is forced with the data of one RCM grid cell, the model
+# point of the site (src/force/model_point.py). Two sites in one grid cell share the forcing data and the CFM run.
+#
+# Keys of each site:
+#   lat, lon       Site coordinates in degrees. Do not change them (see below). They must agree with sites.lock.
+#   windows        Model time windows [first day, last day], both included, for the comparison with measurements.
+#                  scripts/plot_density_error.py stops with an error for a site with no windows.
+#   profile        Depth-density CSV in in_situ_data_path. Default: <site>_depth-density.csv.
+#   active         false: the site is in the table, but sites() does not return it by default. Default: true.
+#   superseded_by  The name of the site that replaces this one.
+#
+# Rule: the name, lat and lon of a site do not change. To correct the coordinates of a site, add a new site with a new
+# name (for example JP21-v2), and set "active: false" and "superseded_by: JP21-v2" on the old site. Add each new site
+# to sites.lock in the same commit. tests/test_sites.py enforces this rule.
+#
+# Caution: the windows are the austral summer windows that scripts/plot_density_error.py used before FEAT-002, by
+# batch. The drill dates are not known yet. The batch_1 windows contain two summers. Make sure of the drill dates
+# before you use the windows for results.
+
+sites:
+  CI-0:
+    lat: -66.403
+    lon: -63.376
+    windows:
+      - [2014-12-01, 2015-02-28]
+      - [2015-12-01, 2016-02-29]
+  CI-22:
+    lat: -66.588
+    lon: -63.212
+    windows:
+      - [2014-12-01, 2015-02-28]
+      - [2015-12-01, 2016-02-29]
+  CI-120:
+    lat: -67.000
+    lon: -61.486
+    windows:
+      - [2014-12-01, 2015-02-28]
+      - [2015-12-01, 2016-02-29]
+  WI-0:
+    lat: -67.444
+    lon: -64.953
+    windows:
+      - [2014-12-01, 2015-02-28]
+      - [2015-12-01, 2016-02-29]
+  WI-70:
+    lat: -67.500
+    lon: -63.336
+    windows:
+      - [2014-12-01, 2015-02-28]
+      - [2015-12-01, 2016-02-29]
+  J108:
+    lat: -67.108
+    lon: -61.287
+    active: false
+    windows:
+      - [2009-12-01, 2010-01-31]
+  J208:
+    lat: -68.300
+    lon: -64.149
+    active: false
+    windows:
+      - [2009-12-01, 2010-01-31]
+  J409:
+    lat: -68.395
+    lon: -64.713
+    active: false
+    windows:
+      - [2009-12-01, 2010-01-31]
+  J109:
+    lat: -68.395
+    lon: -64.710
+    active: false
+  Y208:
+    lat: -67.564
+    lon: -63.257
+    active: false
+  JP21:
+    lat: -68.0086
+    lon: -64.3668
+    active: false
+    windows:
+      - [2022-12-01, 2023-01-31]
+  SI47:
+    lat: -68.0408
+    lon: -64.3236
+    active: false
+    windows:
+      - [2022-12-01, 2023-01-31]
+
+# Named lists of sites, for scripts/run_cfm.sh and for analysis. A batch can contain sites with "active: false".
+batches:
+  batch_1: [CI-0, CI-22, CI-120, WI-0, WI-70]
+  batch_2: [J108, J208, J409]
+  batch_3: [JP21, SI47]

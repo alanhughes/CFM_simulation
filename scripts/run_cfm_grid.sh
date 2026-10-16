@@ -3,9 +3,9 @@
 #SBATCH -J cfm_grid
 #SBATCH -a 0-49
 
-# Lat/lon pairs — same index = same location
-LATITUDES=(-67.10815 -68.30038 -68.39473 -68.39467 -67.56443)
-LONGITUDES=(-61.28748 -64.14850 -64.71308 -64.71017 -63.25733)
+# Site names in sites.yaml (the coordinates come from sites.yaml).
+# Keep #SBATCH -a equal to 0-(number of sites x physrho values x RCMs - 1).
+SITES=(J108 J208 J409 J109 Y208)
 
 # CFM parameters
 PHYSRHO_VALUES=("GSFC2020" "HLdynamic" "Crocus" "Barnola1991" "Ligtenberg2011")
@@ -14,7 +14,7 @@ RCM_VALUES=("RACMO" "MAR")
 # Shared parameters
 LIQUID="bucket"
 
-NUM_LOCATIONS=${#LATITUDES[@]}
+NUM_LOCATIONS=${#SITES[@]}
 NUM_PHYSRHO=${#PHYSRHO_VALUES[@]}
 NUM_RCM=${#RCM_VALUES[@]}
 TOTAL_TASKS=$((NUM_LOCATIONS * NUM_PHYSRHO * NUM_RCM))
@@ -30,8 +30,7 @@ COMBO_INDEX=$((SLURM_ARRAY_TASK_ID % COMBOS_PER_LOCATION))
 PHYSRHO_INDEX=$((COMBO_INDEX / NUM_RCM))
 RCM_INDEX=$((COMBO_INDEX % NUM_RCM))
 
-LAT=${LATITUDES[$LOCATION_INDEX]}
-LON=${LONGITUDES[$LOCATION_INDEX]}
+SITE=${SITES[$LOCATION_INDEX]}
 PHYSRHO=${PHYSRHO_VALUES[$PHYSRHO_INDEX]}
 RCM=${RCM_VALUES[$RCM_INDEX]}
 
@@ -54,11 +53,10 @@ cd "$REPO_ROOT"
 # ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
-echo "Task ${SLURM_ARRAY_TASK_ID}/${TOTAL_TASKS}: location=${LOCATION_INDEX}, lat=${LAT}, lon=${LON}, physrho=${PHYSRHO}, rcm=${RCM}, liquid=${LIQUID}"
+echo "Task ${SLURM_ARRAY_TASK_ID}/${TOTAL_TASKS}: location=${LOCATION_INDEX}, site=${SITE}, physrho=${PHYSRHO}, rcm=${RCM}, liquid=${LIQUID}"
 
 python scripts/run_cfm.py \
-    --lat   "$LAT"    \
-    --lon   "$LON"    \
+    --site  "$SITE"   \
     --physrho "$PHYSRHO" \
     --rcm   "$RCM"    \
     --liquid "$LIQUID"
