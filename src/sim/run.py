@@ -1,3 +1,4 @@
+import copy
 import json
 import logging
 import os
@@ -10,12 +11,26 @@ import numpy as np
 import pandas as pd
 from typing import Literal
 
-from cfm_config import cfm_output_folder, config, run_id
+from cfm_config import config
 from cfm_config import cfm_version as lookup_cfm_version
-from force.cache import forcing_csv_path
-from force.model_point import model_point_at
-from sim.identity import check_cfm_identity, measure_cfm_identity, wrapper_identity
-from sim.manifest import COMPLETE, FAILED, RUNNING, is_alive, now, read_manifest, write_manifest
+from force.cache import forcing_csv_path, forcing_json_path, sha256_file
+from force.model_point import ModelPoint, model_point_at
+from sim.identity import check_cfm_identity, check_wrapper_identity, measure_cfm_identity, wrapper_identity
+from sim.manifest import (
+    COMPLETE,
+    FAILED,
+    RUNNING,
+    WRAPPER_PARAMS,
+    is_alive,
+    now,
+    read_manifest,
+    run_folder,
+    run_hash,
+    run_hash_inputs,
+    write_manifest,
+)
+
+CFM_CONFIG_NAME = "CFMconfig.json"
 
 logging.basicConfig(level=logging.INFO)
 
@@ -50,10 +65,8 @@ class CFMRun:
     ) -> None:
         """Initialize CFM Run with configuration from config.yaml.
 
-        Sets up paths and variables needed for the CFM run. Including:
-        - Forcing data path from which to read MAR or RACMO data
-        - Output path to save CFM results
-        - JSON configuration name saving of CFM configuration
+        The run folder is not known until run(): it contains the run hash, which needs the forcing CSV and the
+        measured CFM identity (FEAT-001).
 
         Args:
             borehole_lat (float): Latitude of borehole location.
@@ -64,18 +77,17 @@ class CFMRun:
             cfm_version (dict | None): CFM version from cfm_config.cfm_version(), default_cfm_version if None. This
                 process must be running that version's python.
             force (bool): rerun even if a complete run exists in the output folder.
-            site (str | None): name in sites.yaml of the site at borehole_lat/borehole_lon, for the manifest.
+            site (str | None): name in sites.yaml of the site at borehole_lat/borehole_lon, for the manifest. Two sites
+                in one grid cell share a run; the manifest lists all the sites that asked for it.
         """
 
         # all these need to be passed in because they vary by run
         self._rcm_name: Literal["MAR", "RACMO"] = rcm_name
-        self._cfm_input_path: str = f"{config['CFM_data_path']}/cfm_input"
-        self._cfm_output_path: str = f"{config['CFM_data_path']}/cfm_output"
         self._borehole_lat: float = borehole_lat
         self._borehole_lon: float = borehole_lon
 
-        # load cfm config
-        self._cfm_config: dict = config["cfm_config"]
+        # a copy of the cfm config, as _run_cfm adds keys to it
+        self._cfm_config: dict = copy.deepcopy(config["cfm_config"])
 
         # set physRho and borehole loc from argument in case we've used command line to override config
         self._cfm_config["physRho"] = physRho
@@ -85,36 +97,28 @@ class CFMRun:
         # also set the liquid scheme in the config
         self._cfm_config["liquid"] = liquid
 
-        # set json config name
-        self._json_config_name = f"CFMconfig_{run_id(borehole_lat, borehole_lon, physRho, liquid, rcm_name)}.json"
-
-        # set output folder in config. The folder is made in run(), once the forcing data has been read
-        self._cfm_config["resultsFolder"] = cfm_output_folder(borehole_lat, borehole_lon, physRho, liquid, rcm_name)
         self._force: bool = force
         self._site: str | None = site
         self._cfm_version: dict = cfm_version or lookup_cfm_version()
         self._manifest: dict = {}
+        self._model_point: ModelPoint | None = None
+        self._hash_inputs: dict = {}
+        self._run_hash: str | None = None
+        self._cfm_identity: dict = {}
+        self._wrapper_identity: dict = {}
 
     def run(self) -> None:
         """Run the CFM model with the specified configuration and forcing data, unless a complete run exists.
 
-        The run's state is kept in manifest.json in the output folder: "running" while the CFM runs, then "complete"
-        or "failed". Only a "complete" run is skipped, and --force reruns even that.
+        The run folder is runs/<ModelPoint.tag>/<physRho>_<liquid>_<start>-<end>/<cfm-label>/<hash8>/ (see
+        sim.manifest). The run's state is kept in manifest.json in that folder: "running" while the CFM runs, then
+        "complete" or "failed". Only a "complete" run with the same run hash is skipped, and --force reruns even that.
         """
 
-        results_folder = self._cfm_config["resultsFolder"]
+        results_folder = self.prepare()
         if not self._should_run(results_folder):
             return
 
-        if os.path.realpath(sys.executable) != os.path.realpath(self._cfm_version["python"]):
-            raise RuntimeError(
-                f"CFM version {self._cfm_version['label']!r} runs with {self._cfm_version['python']}, "
-                f"but this is {sys.executable}. Use scripts/run_cfm.py, which starts the right one."
-            )
-        cfm_identity = measure_cfm_identity(self._cfm_version)
-        check_cfm_identity(cfm_identity)
-
-        # read forcing before making the folder, so a missing CSV leaves nothing behind
         self._read_force_data()
         os.makedirs(results_folder, exist_ok=True)
 
@@ -125,7 +129,7 @@ class CFMRun:
         log_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
         logging.getLogger().addHandler(log_handler)
 
-        self._manifest = self._new_manifest(cfm_identity)
+        self._manifest = self._new_manifest(self._cfm_identity, self._wrapper_identity)
         write_manifest(results_folder, self._manifest)
         logging.info(f"CFM output will be saved to {results_folder}.")
 
@@ -151,8 +155,55 @@ class CFMRun:
             logging.getLogger().removeHandler(log_handler)
             log_handler.close()
 
+    def prepare(self) -> str:
+        """Measure the CFM and the wrapper, find the forcing CSV, and make the run hash. Returns the run folder.
+
+        Makes no folder and runs nothing. Stops with an error if the interpreter, the CFM checkout or src/ is not
+        correct, or if the forcing CSV does not exist.
+        """
+        if os.path.realpath(sys.executable) != os.path.realpath(self._cfm_version["python"]):
+            raise RuntimeError(
+                f"CFM version {self._cfm_version['label']!r} runs with {self._cfm_version['python']}, "
+                f"but this is {sys.executable}. Use scripts/run_cfm.py, which starts the right one."
+            )
+        self._cfm_identity = cfm_identity = measure_cfm_identity(self._cfm_version)
+        check_cfm_identity(cfm_identity)
+        self._wrapper_identity = wrapper = wrapper_identity()
+        check_wrapper_identity(wrapper)
+
+        # the forcing CSV must exist before the folder is made, so a missing CSV leaves nothing behind (BUG-004)
+        self._model_point = model_point_at(self._borehole_lat, self._borehole_lon, self._rcm_name)
+        self._force_data_path = forcing_csv_path(self._model_point)
+        forcing_sha256 = self._forcing_sha256()
+
+        self._hash_inputs = run_hash_inputs(
+            self._cfm_config,
+            {key: config[key] for key in WRAPPER_PARAMS},
+            self._model_point.tag,
+            self._model_point.release,
+            forcing_sha256,
+            cfm_identity,
+            wrapper,
+        )
+        self._run_hash = run_hash(self._hash_inputs)
+        results_folder = run_folder(
+            self._model_point.tag,
+            self._cfm_config["physRho"],
+            self._cfm_config["liquid"],
+            config["start_year"],
+            config["end_year"],
+            self._cfm_version["label"],
+            self._run_hash,
+        )
+        self._cfm_config["resultsFolder"] = results_folder
+        return results_folder
+
     def _should_run(self, results_folder: str) -> bool:
-        """Whether to run the CFM, from the manifest (if any) of an earlier run in results_folder."""
+        """Whether to run the CFM, from the manifest (if any) of an earlier run in results_folder.
+
+        Only a "complete" manifest with the same run hash is skipped (BUG-004). A manifest with a different hash is an
+        error, also with --force: it is a different run (hash8 is the same by chance), or a folder that was copied.
+        """
 
         if not os.path.exists(results_folder):
             return True
@@ -160,15 +211,20 @@ class CFMRun:
         manifest = read_manifest(results_folder)
 
         if manifest is None:
-            # made before manifests existed. Keep the old skip only if it holds results, as that is the best we can do
+            # a folder with results but no manifest is not from sim.run; do not delete its results without --force
             if os.path.exists(os.path.join(results_folder, self._cfm_config["resultsFileName"])) and not self._force:
-                logging.warning(
-                    f"{results_folder} has results but no manifest, so it is assumed complete. "
-                    "Use --force to rerun it."
+                raise RuntimeError(
+                    f"{results_folder} has results but no manifest, so its run is not known. "
+                    "Use --force to run again and replace the results."
                 )
-                return False
-            logging.info(f"{results_folder} has no manifest and no results. Running again.")
+            logging.info(f"{results_folder} has no manifest. Running.")
             return True
+
+        if manifest.get("run_hash") != self._run_hash:
+            raise RuntimeError(
+                f"{results_folder} contains the run {manifest.get('run_hash')}, not {self._run_hash}. "
+                "Move that folder, and do the run again."
+            )
 
         status = manifest["status"]
         if self._force:
@@ -179,6 +235,7 @@ class CFMRun:
 
         if status == COMPLETE:
             logging.info(f"Complete run found at {results_folder}, skipping. Use --force to rerun.")
+            self._add_site(results_folder, manifest)
             return False
         if status == RUNNING:
             alive = is_alive(manifest)
@@ -194,12 +251,51 @@ class CFMRun:
         logging.warning(f"{results_folder} has status {status} ({manifest.get('error')}). Rerunning.")
         return True
 
-    def _new_manifest(self, cfm_identity: dict) -> dict:
+    def _add_site(self, results_folder: str, manifest: dict) -> None:
+        """Add this site to the sites of a complete run. Two sites in one grid cell share a run (FEAT-002)."""
+        sites = manifest["run"].setdefault("sites", [])
+        if self._site is not None and self._site not in sites:
+            sites.append(self._site)
+            write_manifest(results_folder, manifest)
+            logging.info(f"Added site {self._site} to the sites of {results_folder}: {', '.join(sites)}.")
+
+    def _forcing_sha256(self) -> str:
+        """SHA-256 of the forcing CSV. If the CSV has a JSON file (FEAT-002), its csv_sha256 must agree."""
+        if not os.path.exists(self._force_data_path):
+            raise FileNotFoundError(
+                f"Forcing data file not found: {self._force_data_path}. Run scripts/run_cfm.py to generate the file."
+            )
+        sha256 = sha256_file(self._force_data_path)
+        json_path = forcing_json_path(self._force_data_path)
+        if os.path.exists(json_path):
+            with open(json_path) as file:
+                recorded = json.load(file).get("csv_sha256")
+            if recorded is not None and recorded != sha256:
+                raise RuntimeError(
+                    f"{self._force_data_path} has SHA-256 {sha256}, but {json_path} records {recorded}. "
+                    "The CSV changed after it was made. Make the forcing data again."
+                )
+        return sha256
+
+    def _new_manifest(self, cfm_identity: dict, wrapper: dict) -> dict:
         """Manifest for a run that is about to start. The final cfm_config is added once _run_cfm has made it."""
+        mp = self._model_point
         return {
             "status": RUNNING,
+            "run_hash": self._run_hash,
             "run": {
-                "site": self._site,
+                "sites": [self._site] if self._site is not None else [],
+                "model_point": {
+                    "tag": mp.tag,
+                    "rcm_name": mp.rcm_name,
+                    "release": mp.release,
+                    "i": mp.i,
+                    "j": mp.j,
+                    "cell_lat": mp.cell_lat,
+                    "cell_lon": mp.cell_lon,
+                    "distance_km": mp.distance_km,
+                    "method": mp.method,
+                },
                 "borehole_lat": self._borehole_lat,
                 "borehole_lon": self._borehole_lon,
                 "physRho": self._cfm_config["physRho"],
@@ -213,29 +309,17 @@ class CFMRun:
                 "forcing_csv": self._force_data_path,
             },
             "cfm": cfm_identity,
-            "wrapper": wrapper_identity(),
+            "wrapper": wrapper,
+            "hash_inputs": self._hash_inputs,
             "host": socket.gethostname(),
             "pid": os.getpid(),
             "started": now(),
         }
 
     def _read_force_data(self) -> None:
-        """
-        Read in the forcing data from the MAR data CSV file.
-        Raises FileNotFoundError if the file does not exist.
-        """
-
-        # Read in forcing data
-        # the forcing CSV of the model point in the forcing cache (FEAT-002)
-        self._force_data_path = force_data_path = forcing_csv_path(
-            model_point_at(self._borehole_lat, self._borehole_lon, self._rcm_name)
-        )
-        if not os.path.exists(force_data_path):
-            raise FileNotFoundError(
-                f"Forcing data file not found: {force_data_path}. Run scripts/run_cfm.py to generate the file."
-            )
-        self._force_data = pd.read_csv(force_data_path, index_col=0, parse_dates=True)
-        logging.info(f"Forcing data read from {force_data_path}.")
+        """Read the forcing CSV of the model point in the forcing cache (FEAT-002). run() found its path."""
+        self._force_data = pd.read_csv(self._force_data_path, index_col=0, parse_dates=True)
+        logging.info(f"Forcing data read from {self._force_data_path}.")
 
     def _run_cfm(self) -> None:
         """Run the CFM model using the forcing data and configuration.
@@ -272,18 +356,16 @@ class CFMRun:
         self._cfm_config["keep_firnthickness"] = True
         self._cfm_config["grid_outputs"] = True
 
-        # write updated config to json
-        with open(
-            f"{self._cfm_output_path}/{self._json_config_name}",
-            "w",
-        ) as fp:
+        # write updated config to json, in the run folder. run.log is in the folder, so the CFM does not delete it
+        config_path = os.path.join(self._cfm_config["resultsFolder"], CFM_CONFIG_NAME)
+        with open(config_path, "w") as fp:
             fp.write(json.dumps(self._cfm_config, sort_keys=False, indent=4, separators=(",", ": ")))
         self._manifest["cfm_config"] = self._cfm_config
         write_manifest(self._cfm_config["resultsFolder"], self._manifest)
 
         ### Create CFM instance by passing config file and forcing data, then run the model
         firn = FirnDensityNoSpin(
-            f"{self._cfm_output_path}/{self._json_config_name}",
+            config_path,
             climateTS=climateTS,
             NewSpin=self._cfm_config["NewSpin"],
             SEBfluxes=SEBfluxes,
