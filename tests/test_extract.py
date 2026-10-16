@@ -191,7 +191,6 @@ def cfg(monkeypatch, racmo_dir, racmo23_dir, tmp_path):
         "forcing_cache_dir",
         "forcing_cache_margin",
         "forcing_cache",
-        "forcing_fast_extraction",
     ):
         monkeypatch.delitem(config, key, raising=False)
     clear_cache()
@@ -206,9 +205,33 @@ def _cell(site):
 
 
 def _old_dataframe(cls, lat, lon):
-    """The forcing DataFrame from the old xarray code, as ProcessBase.process builds it."""
+    """The forcing DataFrame of the xarray code that FEAT-003 removed (ProcessRACMO._xr_to_input_dataframe).
+
+    This is a copy of that code. It is the reference for the tests of the h5py extraction.
+    """
     processor = cls(lat, lon)
-    return pd.concat([processor._xr_to_input_dataframe(ds) for ds in processor._read_data()])
+    frames = []
+    for xr_data in processor._read_data():
+        y_idx, x_idx, _ = nearest_cell(xr_data["lat"], xr_data["lon"], lat, lon)
+        data = xr_data.isel(rlat=y_idx, rlon=x_idx)
+        data = data.drop_vars([var for var in data.data_vars if var not in processor._var_to_read])
+        df = data.to_dataframe().reset_index()
+        snow = processor._snowfall_name
+        for name in ("pr", snow, "mltgl"):
+            df[name] = np.clip(df[name], a_min=0, a_max=None)
+        df["rf"] = df["pr"] - df[snow]
+        df["alb"] = df["rsusgl"] / df["rsds"]
+        mapping = config[processor._map_name]
+        df.rename(columns=mapping, inplace=True)
+        df.set_index("time", inplace=True)
+        df = df[list(mapping.values())]
+        df = df[(df.index.year >= config["start_year"]) & (df.index.year <= config["end_year"])]
+        for col in ["SUBLIM", "RAIN", "BDOT", "SMELT"]:
+            if col in df.columns:
+                df[col] = df[col] * 60 * 60 * 24
+        df["RAIN"] = np.clip(df["RAIN"], a_min=0, a_max=None)
+        frames.append(df[~df.index.duplicated(keep="first")])
+    return pd.concat(frames)
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -464,25 +487,19 @@ def test_corrupt_cache_is_rebuilt(cfg):
 
 
 # ---------------------------------------------------------------------------------------------------------------
-# CSV output through ProcessRACMO, and the opt-in switch
+# CSV output through ProcessRACMO
 # ---------------------------------------------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("dataset, cls", [("RACMO", ProcessRACMO), ("RACMO23", ProcessRACMO23)])
 @pytest.mark.parametrize("use_cache", [True, False])
-def test_process_fast_switch_writes_same_csv(cfg, dataset, cls, use_cache):
-    processor = cls(*SITE_B)
-    processor.process()  # the old xarray path
-    with open(processor._save_path) as file:
-        old_csv = file.read()
-    os.remove(processor._save_path)
-    os.remove(forcing_json_path(processor._save_path))
-
-    config["forcing_fast_extraction"] = True
+def test_process_writes_same_csv_as_old_code(cfg, dataset, cls, use_cache):
+    old = _old_dataframe(cls, *SITE_B)
     config["forcing_cache"] = use_cache
-    cls(*SITE_B).process()
+    processor = cls(*SITE_B)
+    processor.process()
     with open(processor._save_path) as file:
-        assert file.read() == old_csv
+        assert file.read() == old.to_csv()
     with open(forcing_json_path(processor._save_path)) as file:
         record = json.load(file)
     assert record["extraction"].startswith("h5py") and record["model_point"]["i"] == _cell(SITE_B)[0]
