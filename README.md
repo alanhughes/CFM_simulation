@@ -129,6 +129,16 @@ python scripts/link_sites.py                                   # {CFM_data_path}
 
 `plot_cfm.py`, `calc_dh.py` and `plot_density_error.py` take `--cfm <label>` (default `default_cfm_version`). If several complete runs match (e.g. before and after a change to the run code), they use the one that finished last and log a warning listing the others. The index file is only an export for you; no code reads it. `link_sites.py` replaces wrong links and never deletes anything that is not a link; `--dry-run` prints the changes only.
 
+Old output folders (`cfm_output/CFMoutput_<lat>_<lon>_..._<rcm>/`) can be copied into this layout with `scripts/migrate_runs.py`. Give each old `cfm_output` folder the label of the CFM version that made it, since the old folders do not record it. The default is a dry run that only prints the plan; `--copy` copies (never moves) the `.hdf5` files and writes a manifest marked `migrated`:
+
+```bash
+python scripts/migrate_runs.py --source 3e3bf7e-speersm ~/luna/CPOM/speersm/CFM_data/cfm_output \
+    --source ab871c8 ~/CFM_data/ab871c8/cfm_output            # dry run
+python scripts/migrate_runs.py ... --copy                     # copy into {CFM_data_path}/runs
+```
+
+An old run's code and environment are not known, so its hash is built from what is known (config JSON if any, schemes, years, model point, forcing CSV hash, CFM label, `.hdf5` sizes) with `hash_version: migrated-1`; a new run never reuses it. Its model point is the cell its forcing came from, which for CI-0 and WI-70 on `RACMO` and CI-22 on `MAR` is the cell from before the BUG-002 fix, so find those runs with `--model-point`, not `--site`.
+
 The `scripts/*.sh` batch wrappers loop over sites and densification schemes, and `cd` to the repo root themselves, so they can be run from anywhere. `run_cfm_grid.sh` is a SLURM array job: submit it from the repo root (or set `CFM_SIM_ROOT`), and set `CFM_CONDA_ENV` if your env isn't called `cfm` (on luna it was `CFM3.10.11`).
 
 ## Sites
