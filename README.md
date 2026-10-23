@@ -106,6 +106,8 @@ python scripts/run_cfm.py --site CI-0 \
     --physrho GSFC2020 --rcm RACMO --liquid bucket          # any argument left out comes from config.yaml
 ```
 
+**Years.** `start_year` and `end_year` in `config.yaml` are the default years of every RCM, but the end year is clipped to the last complete year of the RCM's data, found from the data file names (DISC-001). The ANT-12 `RACMO` data stops at 2023-12-31, so with `end_year: 2024` a `RACMO` run is 1979-2023, and `MAR` and `RACMO23` (data to 2024-12-31) runs are 1979-2024. Each clip logs a warning such as `RACMO (ANT-12_...) data stops at 2023-12-31: end_year 2023, not 2024 from config.yaml`. Only the end is clipped: data that starts after `start_year`, or a clipped end year before `spin_end_year`, stops with an error, and a missing year inside the range still stops the forcing (BUG-003). `--start-year` and `--end-year` (on `run_cfm.py`, `extract_forcing.py`, `plot_cfm.py`, `calc_dh.py`, `plot_density_error.py`, `plot_rcm_ts.py`, `run_melt.py` and `plot_melt.py`) are used as they are and never clipped; an end year after the data is an error. `run_cfm.py` resolves the years once (`force.years.run_years`) and gives them to the worker process, and the plot and analysis scripts resolve them the same way, so they find the run with no year argument. The manifest records the end year that was asked for in `run.requested_end_year` and `run.end_year_source` (`config` or `cli`); the run hash and the folder name have the end year of the run.
+
 `run_cfm.py` processes the RCM forcing of the site's model point into the forcing cache (see below), then runs the CFM, writing to
 
 ```
@@ -117,7 +119,7 @@ python scripts/run_cfm.py --site CI-0 \
 Each run folder holds `CFMconfig.json`, the CFM's `.hdf5` output, the wrapper's `run.log`, and a `manifest.json` that records the run's settings, the hash and what went into it (`hash_inputs`), the sites that asked for it, host and timings, and its `status`: `running`, then `complete` or `failed` (with the error). Two caching behaviours to be aware of:
 
 - A run is **skipped if its folder has a `complete` manifest with the same hash**. Pass `--force` to rerun it. A `failed` run, or a `running` one whose process has died, is rerun on its own. A folder with results but no manifest needs `--force`.
-- Forcing data that has already been processed is reused rather than regenerated. It is checked to cover `start_year` to `end_year` first: the ANT-12 `RACMO` data stops at 2023, so `end_year: 2024` stops with an error for `--rcm RACMO`.
+- Forcing data that has already been processed is reused rather than regenerated. It is checked to cover the years of the run first (BUG-003): for example `--rcm RACMO --end-year 2024` stops with an error, as the ANT-12 data stops at 2023.
 
 Scripts find runs from their manifests, not from a folder name: `sim.runs.find_runs(site="CI-0", physRho="GSFC2020", cfm="ab871c8")` (the site's model point, so two sites in one cell share a run), or from the shell:
 

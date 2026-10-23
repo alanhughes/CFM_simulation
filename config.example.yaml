@@ -42,7 +42,9 @@ in_situ_data_path: "{cpom_mount}/hughes54/CFM_data/in_situ"
 # {forcing_data_path}/<rcm_name>/<release>/<i>_<j>_<start_year>_<end_year>.csv - optional, default below
 forcing_data_path: "{CFM_data_path}/forcing"
 
-# Period
+# Period. The default years of every RCM. The end year of a run is clipped to the last complete year of that RCM's
+# data, with a warning (DISC-001): the ANT-12 (RACMO) data stops at 2023-12-31, so a RACMO run is 1979-2023. The start
+# year is never changed: data that starts after it is an error. --start-year/--end-year on the scripts are not clipped.
 start_year: 1979
 end_year: 2024
 
