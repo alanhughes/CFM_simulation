@@ -252,10 +252,12 @@ class CFMRun:
         return True
 
     def _add_site(self, results_folder: str, manifest: dict) -> None:
-        """Add this site to the sites of a complete run. Two sites in one grid cell share a run (FEAT-002)."""
+        """Add this site and its coordinates to the sites of a complete run. Two sites in one grid cell share a run
+        (FEAT-002)."""
         sites = manifest["run"].setdefault("sites", [])
         if self._site is not None and self._site not in sites:
             sites.append(self._site)
+            manifest["run"].setdefault("site_coords", {})[self._site] = [self._borehole_lat, self._borehole_lon]
             write_manifest(results_folder, manifest)
             logging.info(f"Added site {self._site} to the sites of {results_folder}: {', '.join(sites)}.")
 
@@ -285,6 +287,9 @@ class CFMRun:
             "run_hash": self._run_hash,
             "run": {
                 "sites": [self._site] if self._site is not None else [],
+                # the coordinates of each site when it asked for the run; sim.runs.find_runs compares them with
+                # sites.yaml. Not in the run hash: the run is for the model point (FEAT-002)
+                "site_coords": {self._site: [self._borehole_lat, self._borehole_lon]} if self._site is not None else {},
                 "model_point": {
                     "tag": mp.tag,
                     "rcm_name": mp.rcm_name,

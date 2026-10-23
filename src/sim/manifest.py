@@ -8,6 +8,11 @@ The run hash is the SHA-256 of a canonical JSON document of everything that chan
 first 8 characters name the run folder:
 
     <CFM_data_path>/runs/<ModelPoint.tag>/<physRho>_<liquid>_<start>-<end>/<cfm-label>/<hash8>/
+
+The run is for a model point, not for a site: two sites in one grid cell share it (FEAT-002). The manifest records the
+sites that asked for the run in run.sites, and the coordinates of each site in run.site_coords, {name: [lat, lon]}.
+The site names and coordinates are not in the run hash. A manifest from before run.site_coords has the coordinates of
+its first site only, in run.borehole_lat and run.borehole_lon.
 """
 
 import hashlib
@@ -48,7 +53,7 @@ def run_hash_inputs(
     cfm_identity: dict,
     wrapper_identity: dict,
 ) -> dict:
-    """The document that the run hash is made from. It has no times, host, pid, paths or site name."""
+    """The document that the run hash is made from. It has no times, host, pid, paths, site names or coordinates."""
     return {
         "hash_version": HASH_VERSION,
         "cfm_config": {key: value for key, value in cfm_config.items() if key not in _UNHASHED_CFM_CONFIG_KEYS},

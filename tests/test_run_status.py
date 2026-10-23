@@ -125,10 +125,26 @@ def test_cfm_config_json_is_in_the_run_folder(data_path, monkeypatch):
 
 def test_sites_are_recorded(data_path, cfm_calls):
     new_run(site="CI-0").run()
-    new_run(site="CI-0-twin").run()
+    CFMRun(-66.41, -63.38, *SITE[2:], VERSION, site="CI-0-twin").run()  # another site in the same cell
     new_run(site="CI-0").run()
     assert len(cfm_calls) == 1
-    assert read_manifest(folder())["run"]["sites"] == ["CI-0", "CI-0-twin"]
+    run = read_manifest(folder())["run"]
+    assert run["sites"] == ["CI-0", "CI-0-twin"]
+    # _add_site records the coordinates of the site that it adds
+    assert run["site_coords"] == {"CI-0": [-66.403, -63.376], "CI-0-twin": [-66.41, -63.38]}
+
+
+def test_site_coords_are_not_in_the_run_hash(data_path, cfm_calls):
+    """The run is for the model point: the site names and coordinates do not change the run hash (FEAT-002)."""
+    new_run(site="CI-0").run()
+    other = CFMRun(-66.5, -63.5, *SITE[2:], VERSION, site="other")
+    other.prepare()
+    manifest = read_manifest(folder())
+    assert manifest["run_hash"] == other._run_hash
+    assert manifest["hash_inputs"] == other._hash_inputs
+    assert manifest["run"]["site_coords"] == {"CI-0": [-66.403, -63.376]}
+    hashed = json.dumps(manifest["hash_inputs"])
+    assert "site_coords" not in hashed and "CI-0" not in hashed and "-66.403" not in hashed
 
 
 @pytest.mark.parametrize(
