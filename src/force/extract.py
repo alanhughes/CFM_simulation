@@ -807,9 +807,9 @@ def process_fast(
     """Write the forcing CSV and JSON of each ProcessRACMO/ProcessRACMO23/ProcessMAR in one pass. Returns the CSVs
     written.
 
-    Existing CSVs are checked and skipped, as in ProcessBase.process, unless overwrite is true. Processors that share
-    a model point share one CSV. The cache box contains cache_sites (default: all active sites in sites.yaml) and the
-    locations of the processors. The calling script must have the `if __name__ == "__main__":` guard (BUG-008).
+    Existing CSVs are checked with ProcessBase._check_existing and skipped, unless overwrite is true. Processors that
+    share a model point share one CSV. The cache box contains cache_sites (default: all active sites in sites.yaml) and
+    the locations of the processors. The calling script must have the `if __name__ == "__main__":` guard (BUG-008).
     """
     from cfm_config import config, sites
 
