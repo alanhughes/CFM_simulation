@@ -17,6 +17,7 @@ near the others needs no new pass over the share. See ensure_cache(). process_fa
 model point through ProcessBase.save_forcing, so the CSVs and JSON files are the same as from the old path.
 """
 
+import datetime
 import glob
 import json
 import logging
@@ -71,12 +72,21 @@ class DatasetSpec:
     # (level_keys, axis -> config key) or the fixed value (fixed_levels). An axis of size 1 needs no entry.
     level_keys: Mapping = field(default_factory=dict)
     fixed_levels: Mapping = field(default_factory=dict)
+    # groups: first and last day (YYYYMMDD) in the file name. None: the name has years only, and each file is taken to
+    # hold whole years (see file_days)
+    day_regex: Optional[str] = None
 
 
 DATASETS: Dict[str, DatasetSpec] = {
     # ANT-12, e.g. tas_ANT-12_ERA5_evaluation_r1i1p1f1_UU-IMAU_RACMO24P-NN_v1-r1_day_19790101-19801231.nc
     "RACMO": DatasetSpec(
-        "RACMO", "RACMO_data_path", "RACMO_to_CFM_column_map", "{var}_*.nc", r"_(\d{4})\d{4}-(\d{4})\d{4}\.nc$", "prsn"
+        "RACMO",
+        "RACMO_data_path",
+        "RACMO_to_CFM_column_map",
+        "{var}_*.nc",
+        r"_(\d{4})\d{4}-(\d{4})\d{4}\.nc$",
+        "prsn",
+        day_regex=r"_(\d{8})-(\d{8})\.nc$",
     ),
     # XPEN055, e.g. tas.KNMI-1979.XPEN055.RACMO2.4p1_v5_historical.DD.nc
     "RACMO23": DatasetSpec(
@@ -259,6 +269,19 @@ def _file_years(spec: DatasetSpec, path: str) -> Tuple[int, int]:
         raise ValueError(f"Cannot read the years from file name {path}")
     first = int(match.group(1))
     last = int(match.group(2)) if match.lastindex and match.lastindex >= 2 else first
+    return first, last
+
+
+def file_days(spec: DatasetSpec, path: str) -> Tuple[datetime.date, datetime.date]:
+    """First and last day of a file, from its name only. A name with years only (spec.day_regex None) is taken to
+    hold whole years, 1 January to 31 December."""
+    if spec.day_regex is None:
+        first, last = _file_years(spec, path)
+        return datetime.date(first, 1, 1), datetime.date(last, 12, 31)
+    match = re.search(spec.day_regex, os.path.basename(path))
+    if match is None:
+        raise ValueError(f"Cannot read the days from file name {path}")
+    first, last = (datetime.datetime.strptime(day, "%Y%m%d").date() for day in match.groups())
     return first, last
 
 
