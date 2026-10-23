@@ -35,9 +35,6 @@ class ProcessBase(ABC):
         self._borehole_lat: float = borehole_lat
         self._borehole_lon: float = borehole_lon
 
-        self._x_idx: int = 0
-        self._y_idx: int = 0
-        self._borehole_data: xr.Dataset = None
         self._model_point: Optional[ModelPoint] = None
 
     @property
