@@ -4,6 +4,13 @@ find_runs() reads the manifest.json of each run folder under runs/ (see sim.mani
 runs that agree with the filters. find_run() returns one run. The site filter uses the site table (sites.yaml) and
 the model point of the site, as two sites in one grid cell share a run (FEAT-002).
 
+find_runs() also compares the coordinates of each site in the manifests of the runs that it returns (run.site_coords;
+in a manifest from before that key, run.borehole_lat and run.borehole_lon for the first site) with sites.yaml, to 3
+decimals (format_coord). The name and the coordinates of a site do not change (FEAT-002), so a difference, or a site
+that is not in sites.yaml, gives a warning: once for each run folder and site in each process. The run is still
+returned. The run hash does not contain the site, so the results are correct for the model point; the warning is about
+the provenance of the site name (DISC-002).
+
 index.csv is only an export of runs_table() for the user, made on request (scripts/find_runs.py --index). The code
 never reads it, so it cannot be out of date for a query.
 """
@@ -12,11 +19,15 @@ import glob
 import logging
 import os
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Dict, List, Optional, Set, Tuple
 
 import pandas as pd
 
+from cfm_config import format_coord, sites as site_table
 from sim.manifest import COMPLETE, MANIFEST_NAME, read_manifest, runs_root
+
+# the (run folder, site) pairs that had a site warning in this process, so that each pair gives one warning only
+_warned_sites: Set[Tuple[str, str]] = set()
 
 
 @dataclass(frozen=True)
@@ -71,6 +82,17 @@ class Run:
     @property
     def sites(self) -> List[str]:
         return list(self.manifest["run"].get("sites", []))
+
+    @property
+    def site_coords(self) -> Dict[str, Tuple[float, float]]:
+        """The (lat, lon) of each site in the manifest. A manifest from before run.site_coords has the coordinates of
+        its first site only, in run.borehole_lat and run.borehole_lon."""
+        run = self.manifest["run"]
+        coords = {site: (lat, lon) for site, (lat, lon) in (run.get("site_coords") or {}).items()}
+        first = self.sites[0] if self.sites else None
+        if first is not None and first not in coords and None not in (run.get("borehole_lat"), run.get("borehole_lon")):
+            coords[first] = (run["borehole_lat"], run["borehole_lon"])
+        return coords
 
     @property
     def finished(self) -> str:
@@ -160,7 +182,44 @@ def find_runs(
         if run_hash is not None and not run.run_hash.startswith(run_hash):
             continue
         runs.append(run)
+    if runs:
+        _check_sites(runs)
     return runs
+
+
+def _check_sites(runs: List[Run]) -> None:
+    """Warn if a site of a run has different coordinates in sites.yaml, or is not in sites.yaml (see the docstring)."""
+    table = site_table(active_only=False)
+    for run in runs:
+        coords = run.site_coords
+        for name in run.sites:
+            if (run.folder, name) in _warned_sites:
+                continue
+            site = table.get(name)
+            if site is None:
+                message = (
+                    f"{run.folder}: site {name} is not in sites.yaml. The run is possibly from a different checkout. "
+                    "The run hash does not depend on the site, so the results are correct for the model point of the "
+                    "run, but the location of this site name is not known (FEAT-002)."
+                )
+            elif name in coords and _differ(coords[name], (site.lat, site.lon)):
+                lat, lon = coords[name]
+                message = (
+                    f"{run.folder}: the manifest has site {name} at lat {lat}, lon {lon}, but sites.yaml has lat "
+                    f"{site.lat}, lon {site.lon}. The run hash does not depend on the site coordinates, so the results "
+                    "are correct for the model point of the run, but the site name had different coordinates when the "
+                    "run was made. The name and the coordinates of a site do not change (FEAT-002)."
+                )
+            else:
+                continue
+            _warned_sites.add((run.folder, name))
+            logging.warning(message)
+
+
+def _differ(a: Tuple[float, float], b: Tuple[float, float]) -> bool:
+    """Whether two (lat, lon) differ to 3 decimals, the precision of sites.yaml, sites.lock and the site matching of
+    scripts/migrate_runs.py."""
+    return tuple(map(format_coord, a)) != tuple(map(format_coord, b))
 
 
 def find_run(**filters) -> Run:

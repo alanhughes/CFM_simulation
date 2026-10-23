@@ -21,7 +21,7 @@ one, and --copy compares the files of the other byte for byte (DUPLICATE). It st
 
 The manifest records the site of each old folder (the site in sites.yaml with the same coordinates to 3 decimals) and,
 in run.site_coords, the coordinates of the old folder name, not those of sites.yaml. Each site of a DUPLICATE group
-has the coordinates of its own folder.
+has the coordinates of its own folder. find_runs compares them with sites.yaml to 3 decimals (see sim.runs).
 
 The model point of an old run is the cell whose data is in its forcing CSV: the cell of the search in degrees that the
 code used before the BUG-002 fix. For CI-0 and WI-70 on RACMO (ANT-12) and CI-22 on MAR, this is not the model point of
