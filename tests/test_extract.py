@@ -8,6 +8,11 @@ code in src/force/process.py. Run from the repo root.
 
 import json
 import os
+import re
+import runpy
+import sys
+import warnings
+from pathlib import Path
 
 import h5py
 import numpy as np
@@ -489,6 +494,48 @@ def test_extract_points_many_cells_and_processes(cfg):
         pd.testing.assert_frame_equal(one[cell], many[cell], check_exact=True)
     assert one[(2, 4)]["T2m"].isna().sum() == 3  # one fill value in each of the 3 files
     assert one[(0, 0)].index[0] == pd.Timestamp("1979-01-01") and one[(0, 0)].index[-1] == pd.Timestamp("1981-12-31")
+
+
+def test_workers_start_with_forkserver(cfg, monkeypatch):
+    """The pool starts its workers with forkserver on Linux, not fork, which can deadlock in a process with threads
+    (BUG-008). No "use of fork() may lead to deadlocks" warning."""
+    methods = []
+    real_executor = extract.ProcessPoolExecutor
+
+    def executor(*args, mp_context=None, **kwargs):
+        methods.append(mp_context.get_start_method())
+        return real_executor(*args, mp_context=mp_context, **kwargs)
+
+    monkeypatch.setattr(extract, "ProcessPoolExecutor", executor)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        frames = extract.extract_points("RACMO23", [(2, 4)], processes=2)
+    assert methods == ["forkserver" if sys.platform.startswith("linux") else "spawn"]
+    assert len(frames[(2, 4)]) == 365 + 366 + 365
+    assert not [w for w in caught if "fork()" in str(w.message)], [str(w.message) for w in caught]
+    monkeypatch.setattr(sys, "platform", "darwin")
+    assert extract._start_method() == "spawn"
+
+
+_SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
+_STARTS_EXTRACTION = re.compile(r"process_fast|extract_points|forcing_for_cells|\.process\(\)|Process(RACMO|MAR)")
+
+
+@pytest.mark.parametrize(
+    "script", sorted(p.name for p in _SCRIPTS.glob("*.py") if _STARTS_EXTRACTION.search(p.read_text()))
+)
+def test_scripts_do_no_work_when_imported_by_a_worker(cfg, monkeypatch, script):
+    """forkserver and spawn import the main script again as __mp_main__; a script that starts the extraction must
+    do nothing then, so its work must be inside `if __name__ == "__main__":` (BUG-008)."""
+
+    def fail(*args, **kwargs):
+        raise AssertionError(f"{script} starts the extraction when it is imported")
+
+    for name in ("process_fast", "forcing_for_cells", "extract_points", "_map_jobs"):
+        monkeypatch.setattr(extract, name, fail)
+    monkeypatch.setattr(sys, "argv", [script])
+    namespace = runpy.run_path(str(_SCRIPTS / script), run_name="__mp_main__")
+    assert namespace["__name__"] == "__mp_main__"
 
 
 def test_list_files_filters_years_and_checks_coverage(cfg):
