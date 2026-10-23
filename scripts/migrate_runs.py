@@ -19,6 +19,10 @@ sim.run never skips a new run because of a migrated run. Two old folders with th
 example the same run in speersm/ and in ~/CFM_data/, or two sites in one cell) get the same hash: the script copies
 one, and --copy compares the files of the other byte for byte (DUPLICATE). It stops if they are different.
 
+The manifest records the site of each old folder (the site in sites.yaml with the same coordinates to 3 decimals) and,
+in run.site_coords, the coordinates of the old folder name, not those of sites.yaml. Each site of a DUPLICATE group
+has the coordinates of its own folder. find_runs compares them with sites.yaml to 3 decimals (see sim.runs).
+
 The model point of an old run is the cell whose data is in its forcing CSV: the cell of the search in degrees that the
 code used before the BUG-002 fix. For CI-0 and WI-70 on RACMO (ANT-12) and CI-22 on MAR, this is not the model point of
 the site now. find_runs(site=...) does not give these runs; use find_runs(model_point=...).
@@ -110,6 +114,7 @@ class RunPlan:
     action: str = ""
     notes: List[str] = field(default_factory=list)
     sites: List[str] = field(default_factory=list)
+    site_coords: dict = field(default_factory=dict)  # {site: [lat, lon]}, the coordinates of the old folder name
 
 
 def cell_model_point(rcm: str, i: int, j: int, lat: float, lon: float) -> ModelPoint:
@@ -176,6 +181,7 @@ def plan_folder(path: str, label: str, site_by_coords: dict) -> Optional[RunPlan
     )
     plan.site = site_by_coords.get((format_coord(plan.lat), format_coord(plan.lon)), "(no site)")
     plan.sites = [plan.site] if plan.site != "(no site)" else []
+    plan.site_coords = {site: [plan.lat, plan.lon] for site in plan.sites}
 
     results = os.path.join(path, "CFMresults.hdf5")
     if not os.path.exists(results):
@@ -231,6 +237,7 @@ def group_plans(plans: List[RunPlan]) -> None:
             for site in plan.sites:
                 if site not in first.sites:
                     first.sites.append(site)
+                    first.site_coords[site] = plan.site_coords[site]
         manifest = read_manifest(target) if os.path.isdir(target) else None
         if os.path.isdir(target):
             if manifest is not None and manifest.get("run_hash") == first.run_hash and manifest.get("status") == COMPLETE:
@@ -280,6 +287,7 @@ def migrated_manifest(plan: RunPlan) -> dict:
         },
         "run": {
             "sites": plan.sites,
+            "site_coords": plan.site_coords,
             "model_point": {
                 "tag": mp.tag,
                 "rcm_name": mp.rcm_name,

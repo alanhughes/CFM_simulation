@@ -25,20 +25,26 @@ _spec.loader.exec_module(migrate)
 NAME = "CFMoutput_-66.403_-63.376_1979_2024_GSFC2020_bucket_RACMO"
 
 
-def make_source(root: Path, results: bytes = b"results", config_json: bool = True, csv_end: str = "2023-12-31") -> Path:
-    """An old CFM_data folder: cfm_output/<NAME>/ with .hdf5 files, and cfm_input/ with the forcing CSV."""
+def make_source(
+    root: Path, results: bytes = b"results", config_json: bool = True, csv_end: str = "2023-12-31", coords=None
+) -> Path:
+    """An old CFM_data folder: cfm_output/<name>/ with .hdf5 files, and cfm_input/ with the forcing CSV.
+
+    coords is the (lat, lon) text of the folder name, ("-66.403", "-63.376") by default."""
+    lat, lon = coords or ("-66.403", "-63.376")
+    name = f"CFMoutput_{lat}_{lon}_1979_2024_GSFC2020_bucket_RACMO"
     output = root / "cfm_output"
-    (output / NAME).mkdir(parents=True)
-    (output / NAME / "CFMresults.hdf5").write_bytes(results)
-    (output / NAME / "CFMspin.hdf5").write_bytes(b"spin")
-    (output / NAME / "CFMforcing.hdf5").write_bytes(b"forcing")
+    (output / name).mkdir(parents=True)
+    (output / name / "CFMresults.hdf5").write_bytes(results)
+    (output / name / "CFMspin.hdf5").write_bytes(b"spin")
+    (output / name / "CFMforcing.hdf5").write_bytes(b"forcing")
     if config_json:
-        (output / (NAME.replace("CFMoutput_", "CFMconfig_") + ".json")).write_text(
+        (output / (name.replace("CFMoutput_", "CFMconfig_") + ".json")).write_text(
             '{"physRho": "GSFC2020", "resultsFolder": "/old/path"}'
         )
     (root / "cfm_input").mkdir()
     dates = pd.date_range("1979-01-01", csv_end, freq="D")
-    csv = root / "cfm_input" / "RACMO_-66.403_-63.376_1979_2024.csv"
+    csv = root / "cfm_input" / f"RACMO_{lat}_{lon}_1979_2024.csv"
     pd.DataFrame({"TIME": dates, "T2m": 250.0}).to_csv(csv, index=False)
     os.utime(csv, (0, 0))  # older than the results
     return output
@@ -91,6 +97,7 @@ def test_copy(data_path):
     assert manifest["hash_inputs"]["hash_version"] == "migrated-1"
     assert manifest["migrated"]["source"] == str(source / NAME)
     assert manifest["run"]["sites"] == ["CI-0"]
+    assert manifest["run"]["site_coords"] == {"CI-0": [-66.403, -63.376]}
     assert run.cfm == "3e3bf7e-speersm"
     assert sorted(os.listdir(run.folder)) == [
         "CFMconfig.json", "CFMforcing.hdf5", "CFMresults.hdf5", "CFMspin.hdf5", "manifest.json", "run.log"
@@ -108,6 +115,16 @@ def test_duplicate_is_compared(data_path, capsys):
     assert migrate.main(sources + ["--copy"]) == 0
     assert "SAME" in capsys.readouterr().out
     assert len(find_runs()) == 1
+
+
+def test_duplicate_sites_have_their_own_coordinates(data_path):
+    """Two sites in one cell with the same results: one run, and each site has the coordinates of its own folder."""
+    first = make_source(data_path / "a", coords=("-68.395", "-64.713"))
+    second = make_source(data_path / "b", coords=("-68.395", "-64.710"))
+    assert migrate.main(["--source", "x", str(first), "--source", "x", str(second), "--copy"]) == 0
+    (run,) = find_runs()
+    assert run.manifest["run"]["sites"] == ["J409", "J109"]
+    assert run.manifest["run"]["site_coords"] == {"J409": [-68.395, -64.713], "J109": [-68.395, -64.71]}
 
 
 def test_duplicate_with_other_bytes_stops(data_path):

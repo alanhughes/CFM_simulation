@@ -1,6 +1,7 @@
 """Tests for find_runs (src/sim/runs.py) and scripts/link_sites.py (FEAT-001). Run from the repo root.
 
-The run folders are made with manifests only. The model point of a site is a stub, so no RCM data is read.
+The run folders are made with manifests only. The model point of a site is a stub, so no RCM data is read. The site
+coordinate check uses the sites of the real sites.yaml.
 """
 
 import importlib.util
@@ -11,6 +12,7 @@ import pytest
 
 import sim.runs
 from cfm_config import config
+from cfm_config import sites as site_table
 from sim.manifest import COMPLETE, FAILED, run_folder, write_manifest
 from sim.runs import find_run, find_runs, runs_table
 
@@ -23,7 +25,17 @@ _spec.loader.exec_module(link_sites)
 SITE_TAGS = {"CI-0": {"RACMO": "RACMO_261_126", "MAR": "MAR_1_2"}, "CI-0-twin": {"RACMO": "RACMO_261_126", "MAR": "MAR_9_9"}}
 
 
-def make_run(tag, physRho="GSFC2020", cfm="ab871c8", hash_="a" * 64, status=COMPLETE, finished="2026-10-16T10:00:00"):
+def make_run(
+    tag,
+    physRho="GSFC2020",
+    cfm="ab871c8",
+    hash_="a" * 64,
+    status=COMPLETE,
+    finished="2026-10-16T10:00:00",
+    sites=("CI-0",),
+    **run_keys,
+):
+    """A run folder with a manifest. run_keys are more keys of manifest["run"], for example site_coords."""
     rcm = link_sites.rcm_of_tag(tag)
     folder = run_folder(tag, physRho, "bucket", 1979, 2024, cfm, hash_)
     os.makedirs(folder)
@@ -31,7 +43,8 @@ def make_run(tag, physRho="GSFC2020", cfm="ab871c8", hash_="a" * 64, status=COMP
         "status": status,
         "run_hash": hash_,
         "run": {
-            "sites": ["CI-0"],
+            "sites": list(sites),
+            **run_keys,
             "model_point": {"tag": tag},
             "rcm_name": rcm,
             "physRho": physRho,
@@ -44,6 +57,12 @@ def make_run(tag, physRho="GSFC2020", cfm="ab871c8", hash_="a" * 64, status=COMP
     }
     write_manifest(folder, manifest)
     return folder
+
+
+@pytest.fixture(autouse=True)
+def no_warned_sites(monkeypatch):
+    """Each test starts with no site warnings given in this process."""
+    monkeypatch.setattr(sim.runs, "_warned_sites", set())
 
 
 @pytest.fixture
@@ -147,3 +166,70 @@ def test_link_sites_dry_run_and_no_data_deleted(runs, tmp_path):
     os.makedirs(os.path.join(links, "CI-0", "RACMO"))  # a real folder, not a link
     with pytest.raises(RuntimeError, match="not a symbolic link"):
         link_sites.sync_links(expected, links, ["RACMO"])
+
+
+def site_warnings(caplog) -> list:
+    return [record.getMessage() for record in caplog.records if "sites.yaml" in record.getMessage()]
+
+
+def test_site_coords_that_agree_give_no_warning(runs, caplog, monkeypatch):
+    make_run("RACMO_100_100", hash_="1" * 64, site_coords={"CI-0": [-66.403, -63.376]})
+    reads = []
+    monkeypatch.setattr(sim.runs, "site_table", lambda **kwargs: reads.append(kwargs) or site_table(**kwargs))
+    assert len(find_runs()) == 6
+    assert site_warnings(caplog) == []
+    assert reads == [{"active_only": False}]  # sites.yaml is read once for each call, not once for each run
+
+
+def test_site_with_other_coords_gives_one_warning(runs, caplog):
+    folder = make_run("RACMO_100_100", hash_="1" * 64, site_coords={"CI-0": [-66.5, -63.376]})
+    assert folder in folders(find_runs())  # the run is still returned
+    (warning,) = site_warnings(caplog)
+    assert folder in warning and "CI-0" in warning
+    assert "-66.5" in warning and "-66.403" in warning and "run hash does not depend" in warning
+    caplog.clear()
+    assert folder in folders(find_runs(model_point="RACMO_100_100"))
+    assert site_warnings(caplog) == []  # one warning for each run folder and site in a process
+
+
+def test_shared_run_warns_for_the_site_with_other_coords_only(runs, caplog):
+    folder = make_run(
+        "RACMO_100_100",
+        hash_="1" * 64,
+        sites=["J409", "J109"],
+        site_coords={"J409": [-68.395, -64.713], "J109": [-68.395, -64.72]},
+    )
+    find_runs()
+    (warning,) = site_warnings(caplog)
+    assert folder in warning and "site J109" in warning and "J409" not in warning
+
+
+def test_coords_are_compared_to_3_decimals(runs, caplog):
+    """A migrated JP21 run at -68.009 (BUG-001) agrees with -68.0086 in sites.yaml."""
+    make_run("RACMO_100_100", hash_="1" * 64, sites=["JP21"], site_coords={"JP21": [-68.009, -64.367]})
+    find_runs()
+    assert site_warnings(caplog) == []
+
+
+def test_old_manifest_compares_the_first_site(runs, caplog):
+    """A manifest from before run.site_coords has the coordinates of its first site only."""
+    old = {"sites": ["J409", "J109"], "borehole_lat": -68.395, "borehole_lon": -64.72}
+    folder = make_run("RACMO_100_100", hash_="1" * 64, **old)
+    find_runs()
+    (warning,) = site_warnings(caplog)
+    assert folder in warning and "site J409" in warning
+    assert find_runs(model_point="RACMO_100_100")[0].site_coords == {"J409": (-68.395, -64.72)}
+
+
+def test_site_not_in_sites_yaml_gives_a_warning(runs, caplog):
+    folder = make_run("RACMO_100_100", hash_="1" * 64, sites=["CI-0", "NOPE"], site_coords={"NOPE": [-70.0, 0.0]})
+    assert folder in folders(find_runs())
+    (warning,) = site_warnings(caplog)
+    assert folder in warning and "NOPE is not in sites.yaml" in warning
+
+
+def test_only_the_runs_found_are_checked(runs, caplog):
+    make_run("RACMO_100_100", hash_="1" * 64, status=FAILED, site_coords={"CI-0": [-66.5, -63.376]})
+    make_run("MAR_5_5", hash_="2" * 64, site_coords={"CI-0": [-66.5, -63.376]})
+    find_runs(rcm_name="RACMO")
+    assert site_warnings(caplog) == []
