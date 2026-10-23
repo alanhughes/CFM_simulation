@@ -3,10 +3,12 @@ Working script for plotting simulated density profiles against in situ density p
 could be integrated into src/plot/results.py if we decide to keep these plots
 
 Usage:
-    python plot_density_error.py [--cfm <label>]
+    python plot_density_error.py [--cfm <label>] [--start-year <year>] [--end-year <year>]
 
 The runs are found from their manifests (sim.runs.find_run), with the CFM version from --cfm (default_cfm_version if
-not given).
+not given). The years are those of scripts/run_cfm.py (force.years.run_years, DISC-001): start_year and end_year of
+config.yaml, with the end year clipped to the last complete year of the RCM data (RACMO: 1979-2023), or
+--start-year/--end-year as given.
 
 Plots the active sites in sites.yaml, each with its own model time windows (the "windows" key). A site with no
 windows stops the script with an error (BUG-005). Requires the physical densification schemes
@@ -33,6 +35,7 @@ import os
 
 from cfm_config import cfm_version, config, sites
 from force.model_point import model_point_label, shared_model_points
+from force.years import add_year_arguments, run_years
 from sim.runs import find_run
 
 logging.basicConfig(level=logging.INFO)
@@ -40,7 +43,9 @@ logging.basicConfig(level=logging.INFO)
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Plot the model density against the in situ density for each site")
     parser.add_argument("--cfm", help="CFM version (a label in cfm_versions); default_cfm_version if not given")
-    cfm = cfm_version(parser.parse_args().cfm)["label"]
+    add_year_arguments(parser)
+    args = parser.parse_args()
+    cfm = cfm_version(args.cfm)["label"]
 
     borehole_sites = sites()
     physrho_values = [
@@ -52,6 +57,7 @@ if __name__ == "__main__":
     ]
     rcm_name = config["rcm_name"]
     melt_scheme = config["cfm_config"]["liquid"]
+    years = run_years(rcm_name, args.start_year, args.end_year)
 
     # model point of each site; also the inactive sites, to show all the sites that share a grid cell (FEAT-002)
     model_points = shared_model_points(sites(active_only=False), rcm_name)
@@ -78,8 +84,8 @@ if __name__ == "__main__":
                 rcm_name=rcm_name,
                 physRho=physrho,
                 liquid=melt_scheme,
-                start_year=config["start_year"],
-                end_year=config["end_year"],
+                start_year=years.start_year,
+                end_year=years.end_year,
                 cfm=cfm,
             ).results_file
             with xr.open_dataset(output_path, engine="h5netcdf", phony_dims="sort") as ds:

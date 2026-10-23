@@ -8,6 +8,7 @@ import xarray as xr
 
 from cfm_config import cfm_version, config, sites
 from force.model_point import model_point_label, shared_model_points
+from force.years import run_years
 from sim.runs import find_run
 
 logging.basicConfig(level=logging.INFO)
@@ -21,6 +22,8 @@ class ResultsPlotter:
         rcm_name: Literal["RACMO", "MAR"],
         liquid: Literal["bucket"],
         cfm: str | None = None,
+        start_year: int | None = None,
+        end_year: int | None = None,
     ) -> None:
         """Initialize the ResultsPlotter with a site and physical densification schemes.
         Args:
@@ -29,6 +32,8 @@ class ResultsPlotter:
             rcm_name (Literal["RACMO", "MAR"]): RCM name to use for forcing data (e.g., MAR or RACMO)
             liquid (Literal["bucket"]): Meltwater scheme to use (currently only bucket)
             cfm (str | None): Label of the CFM version (default_cfm_version if None)
+            start_year, end_year (int | None): the years of the runs, used as they are. None: the years of
+                force.years.run_years for rcm_name, as scripts/run_cfm.py uses (DISC-001)
         """
 
         self.site: str = site
@@ -36,6 +41,9 @@ class ResultsPlotter:
         self.phys_rho: List[str] = phys_rho
         self.rcm_name: Literal["RACMO", "MAR"] = rcm_name
         self.liquid: Literal["bucket"] = liquid
+        years = run_years(rcm_name, start_year, end_year)
+        self.start_year: int = years.start_year
+        self.end_year: int = years.end_year
 
         phys_rho_str = "_".join(self.phys_rho)
         # the CFMresults.hdf5 of each scheme, found from the run manifests
@@ -45,13 +53,16 @@ class ResultsPlotter:
                 rcm_name=rcm_name,
                 physRho=scheme,
                 liquid=liquid,
-                start_year=config["start_year"],
-                end_year=config["end_year"],
+                start_year=self.start_year,
+                end_year=self.end_year,
                 cfm=self.cfm,
             ).results_file
             for scheme in self.phys_rho
         ]
-        self._figure_path: str = f"{config['CFM_data_path']}/cfm_figures/figures_{site}_{config['start_year']}_{config['end_year']}_{phys_rho_str}_{self.liquid}_{self.rcm_name}_{self.cfm}"
+        self._figure_path: str = (
+            f"{config['CFM_data_path']}/cfm_figures/figures_{site}_{self.start_year}_{self.end_year}_{phys_rho_str}_"
+            f"{self.liquid}_{self.rcm_name}_{self.cfm}"
+        )
         os.makedirs(self._figure_path, exist_ok=True)
 
         # model point of the site and the other sites in its cell; also the inactive sites, as in the other plots (FEAT-002)
