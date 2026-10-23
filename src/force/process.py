@@ -15,41 +15,17 @@ from .model_point import ModelPoint, model_point_at
 logging.basicConfig(level=logging.INFO)
 
 
-def _time_values(datasets: List[xr.Dataset], start_year: int, end_year: int) -> pd.DatetimeIndex:
-    """The time coordinates of the RCM datasets in the year range. Reads the time coordinates only."""
-    times = []
-    for ds in datasets:
-        name = next((name for name in ("time", "TIME") if name in ds.coords), None)
-        if name is not None:
-            times.append(pd.DatetimeIndex(ds[name].values))
-    if not times:
-        return pd.DatetimeIndex([])
-    index = times[0].append(times[1:])
-    return index[(index.year >= start_year) & (index.year <= end_year)]
-
-
-def _source_files(datasets: List[xr.Dataset]) -> List[str]:
-    """The files that the RCM datasets were read from, from the encoding of their variables."""
-    sources = set()
-    for ds in datasets:
-        if "source" in ds.encoding:
-            sources.add(ds.encoding["source"])
-        for var in ds.variables.values():
-            if "source" in var.encoding:
-                sources.add(var.encoding["source"])
-    return sorted(sources)
-
-
 class ProcessBase(ABC):
-    # name of the RCM, the config key of its column map and the unit changes that _xr_to_input_dataframe makes, for the
-    # JSON file of the forcing cache - set by each subclass
+    # name of the RCM, the config key of its column map and the unit changes of the forcing, for the JSON file of the
+    # forcing cache - set by each subclass
     _rcm_name: str = None
     _map_name: str = None
     _unit_factors: Dict[str, str] = {}
 
     def __init__(self, borehole_lat: float, borehole_lon: float) -> None:
-        """Base class for processing data at specified borehole coordinates. Subclasses should implement the process
-        method to read in and process data to their relevant save directory.
+        """Base class for processing data at specified borehole coordinates. Subclasses implement a process method
+        that writes the forcing CSV of the borehole location with process_fast (FEAT-003), and _read_data, which reads
+        the full maps for MeltRACMO, MeltMAR and the spatial plots.
 
         Args:
             borehole_lat (float): Latitude of borehole location.
@@ -59,10 +35,6 @@ class ProcessBase(ABC):
         self._borehole_lat: float = borehole_lat
         self._borehole_lon: float = borehole_lon
 
-        self._x_idx: int = 0
-        self._y_idx: int = 0
-        self._daily_xr: List[xr.Dataset] = None
-        self._borehole_data: xr.Dataset = None
         self._model_point: Optional[ModelPoint] = None
 
     @property
@@ -85,39 +57,6 @@ class ProcessBase(ABC):
                 f"{self._rcm_name}: the nearest cell in the data is ({y_idx}, {x_idx}), but the model point from "
                 f"the coordinate file is ({mp.i}, {mp.j}). The files in the data path do not use one grid."
             )
-
-    def process(self, save_path: str) -> None:
-        """
-        Process the RCM dataset to extract data at the borehole location, and save it with a JSON file that records
-        its source. Stops with ForcingCoverageError if the data does not include all the years from start_year to
-        end_year (BUG-003).
-        """
-
-        start_year, end_year = config["start_year"], config["end_year"]
-        dataset = f"{self._rcm_name} ({self.model_point.release})"
-
-        if os.path.exists(save_path):
-            logging.info(f"Processed RCM data already exists at {save_path}. Skipping processing.")
-            self._check_existing(save_path, start_year, end_year, dataset)
-
-        else:
-            logging.info(
-                f"Model point {self.model_point.tag}: cell centre ({self.model_point.cell_lat:.4f}, "
-                f"{self.model_point.cell_lon:.4f}), {self.model_point.distance_km:.1f} km from the borehole"
-            )
-            logging.info("Reading RCM data...")
-            self._daily_xr = self._read_data()
-            logging.info("...RCM data read successfully.")
-
-            # stop before the long extraction if a year is not in the files (BUG-003)
-            check_date_coverage(_time_values(self._daily_xr, start_year, end_year), start_year, end_year, dataset)
-
-            logging.info("Processing borehole data...")
-            borehole_dataframes = [self._xr_to_input_dataframe(xr_data) for xr_data in self._daily_xr]
-            self._input_dataframe = pd.concat(borehole_dataframes)
-            logging.info("...borehole data processed successfully.")
-
-            self.save_forcing(save_path, self._input_dataframe, _source_files(self._daily_xr))
 
     def save_forcing(self, save_path: str, df: pd.DataFrame, source_files: List[str], extra: Optional[dict] = None):
         """Check the dates of the forcing data (BUG-003), then save it as a CSV with its JSON file."""
@@ -163,11 +102,6 @@ class ProcessBase(ABC):
     def _read_data(self) -> List[xr.Dataset]:
         """Abstract method to read in data, to be implemented by subclasses."""
         pass
-
-    def _xr_to_input_dataframe(self, xr_data: xr.Dataset) -> pd.DataFrame:
-        """Convert an xarray Dataset to a pandas DataFrame. ProcessBase.process uses this method. ProcessMAR,
-        ProcessRACMO and ProcessRACMO23 do not implement it, because they use process_fast (FEAT-003)."""
-        raise NotImplementedError(f"{type(self).__name__} does not make forcing with the xarray code")
 
 
 class ProcessMAR(ProcessBase):
