@@ -43,7 +43,9 @@ def import_cfm(repo: str) -> tuple:
     """
     loaded = sys.modules.get("firn_density_nospin")
     if loaded is not None and os.path.realpath(os.path.dirname(loaded.__file__)) != os.path.realpath(repo):
-        raise RuntimeError(f"This process already imported the CFM from {os.path.dirname(loaded.__file__)}, not {repo}.")
+        raise RuntimeError(
+            f"This process already imported the CFM from {os.path.dirname(loaded.__file__)}, not {repo}."
+        )
     sys.path.append(repo)
     from RCMpkl_to_spin import makeSpinFiles  # type: ignore
     from firn_density_nospin import FirnDensityNoSpin  # type: ignore

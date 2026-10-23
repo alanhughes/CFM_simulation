@@ -66,7 +66,15 @@ def test_reference_run_is_bit_for_bit(tmp_path):
     forcing.parent.mkdir(parents=True)
     shutil.copyfile(REFERENCE_CSV, forcing)
 
-    command = [version["python"], "-m", "sim.worker", "--lat", repr(float(lat2d[i, j])), "--lon", repr(float(lon2d[i, j]))]
+    command = [
+        version["python"],
+        "-m",
+        "sim.worker",
+        "--lat",
+        repr(float(lat2d[i, j])),
+        "--lon",
+        repr(float(lon2d[i, j])),
+    ]
     command += ["--site", "CI-0", "--physrho", "GSFC2020", "--rcm", "RACMO", "--liquid", "bucket", "--cfm", LABEL]
     env = {**os.environ, "PYTHONPATH": str(REPO / "src")}
     result = subprocess.run(command, cwd=tmp_path, env=env, capture_output=True, text=True)

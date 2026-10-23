@@ -42,7 +42,9 @@ if __name__ == "__main__":
     parser.add_argument("--rcm", type=str, help="RCM name to use for forcing data (e.g., MAR or RACMO)")
     parser.add_argument("--liquid", type=str, help="Meltwater scheme to use (currently only bucket)")
     parser.add_argument("--force", action="store_true", help="Rerun the CFM even if a complete run exists")
-    parser.add_argument("--cfm", type=str, help="CFM version (a label in cfm_versions); default_cfm_version if not given")
+    parser.add_argument(
+        "--cfm", type=str, help="CFM version (a label in cfm_versions); default_cfm_version if not given"
+    )
 
     args = parser.parse_args()
 
@@ -74,7 +76,18 @@ if __name__ == "__main__":
     src_path = os.path.dirname(os.path.dirname(os.path.abspath(sim.__file__)))
     env = {**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, [src_path, os.environ.get("PYTHONPATH")]))}
     command = [version["python"], "-m", "sim.worker", "--lat", str(borehole_lat), "--lon", str(borehole_lon)]
-    command += ["--site", site.name, "--physrho", physRho, "--rcm", rcm_name, "--liquid", liquid, "--cfm", version["label"]]
+    command += [
+        "--site",
+        site.name,
+        "--physrho",
+        physRho,
+        "--rcm",
+        rcm_name,
+        "--liquid",
+        liquid,
+        "--cfm",
+        version["label"],
+    ]
     if args.force:
         command.append("--force")
     logging.info(f"Running CFM version {version['label']!r} with {version['python']}.")

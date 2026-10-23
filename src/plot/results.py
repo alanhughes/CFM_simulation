@@ -55,9 +55,7 @@ class ResultsPlotter:
         os.makedirs(self._figure_path, exist_ok=True)
 
         # model point of the site and the other sites in its cell; also the inactive sites, as in the other plots (FEAT-002)
-        self._model_point_label: str = model_point_label(
-            site, shared_model_points(sites(active_only=False), rcm_name)
-        )
+        self._model_point_label: str = model_point_label(site, shared_model_points(sites(active_only=False), rcm_name))
 
         self._thickness_change_range: List[float] = config[
             "thickness_change_range"

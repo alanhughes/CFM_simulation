@@ -24,4 +24,6 @@ if __name__ == "__main__":
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
 
-    CFMRun(args.lat, args.lon, args.physrho, args.rcm, args.liquid, cfm_version(args.cfm), force=args.force, site=args.site).run()
+    CFMRun(
+        args.lat, args.lon, args.physrho, args.rcm, args.liquid, cfm_version(args.cfm), force=args.force, site=args.site
+    ).run()

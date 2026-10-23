@@ -89,7 +89,9 @@ if __name__ == "__main__":
 
             # save
             output_df = pd.DataFrame({"TIME": input_df["TIME"], "dh_dt": dH_step})
-            output_df.to_csv(f"{save_dir}/dh_dt_time_series_{site}_{phys_rho}_{liquid}_{rcm_name}_{cfm}.csv", index=False)
+            output_df.to_csv(
+                f"{save_dir}/dh_dt_time_series_{site}_{phys_rho}_{liquid}_{rcm_name}_{cfm}.csv", index=False
+            )
 
         plt.xlabel("Time")
         plt.ylabel("dh/dt (m/day)")

@@ -24,6 +24,7 @@ def default_phys_rho(cfm_config: dict) -> list:
     """The densification schemes to plot when no argument is given: the one scheme in cfm_config.physRho (BUG-201)."""
     return [cfm_config["physRho"]]
 
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run CFM plotting with optional command line arguments")
     parser.add_argument("--site", type=str, help="Site name in sites.yaml")
@@ -44,15 +45,12 @@ if __name__ == "__main__":
         help="Meltwater scheme to use (currently only bucket)",
     )
 
-    parser.add_argument("--cfm", type=str, help="CFM version (a label in cfm_versions); default_cfm_version if not given")
+    parser.add_argument(
+        "--cfm", type=str, help="CFM version (a label in cfm_versions); default_cfm_version if not given"
+    )
 
     args = parser.parse_args()
-    if (
-        args.site is not None
-        and args.physrhols is not None
-        and args.rcm is not None
-        and args.liquid is not None
-    ):
+    if args.site is not None and args.physrhols is not None and args.rcm is not None and args.liquid is not None:
         logging.info(
             f"Using command line arguments: site={args.site}, physrho={args.physrhols}, rcm={args.rcm}, liquid={args.liquid}"
         )
