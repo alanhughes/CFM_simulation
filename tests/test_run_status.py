@@ -101,6 +101,19 @@ def test_folder_layout(data_path):
     assert len(parts) == 5 and len(parts[4]) == 8
 
 
+def test_requested_end_year_is_in_the_manifest_not_the_hash(data_path, cfm_calls):
+    """DISC-001: the folder and the hash have the end year of the run; the manifest also has the one asked for."""
+    new_run(requested_end_year=2030, end_year_source="config").run()
+    manifest = read_manifest(folder())
+    assert manifest["run"]["end_year"] == config["end_year"]
+    assert manifest["run"]["requested_end_year"] == 2030
+    assert manifest["run"]["end_year_source"] == "config"
+    assert folder(requested_end_year=2031, end_year_source="cli") == folder()  # the same run
+    assert read_manifest(folder())["run"]["requested_end_year"] == 2030
+    new_run(force=True).run()
+    assert read_manifest(folder())["run"]["requested_end_year"] == config["end_year"]  # default: the end year
+
+
 def test_cfm_config_json_is_in_the_run_folder(data_path, monkeypatch):
     """The real _run_cfm up to the CFM: the config JSON goes in the run folder, which keeps run.log and the manifest."""
     seen = {}
@@ -252,7 +265,9 @@ def test_failed_run_is_marked_failed_and_rerun(data_path, cfm_calls, monkeypatch
 
 def test_stale_running_manifest_is_rerun(data_path, cfm_calls):
     os.makedirs(folder())
-    write_manifest(folder(), {"status": RUNNING, "host": os.uname().nodename, "pid": dead_pid(), "run_hash": run_hash()})
+    write_manifest(
+        folder(), {"status": RUNNING, "host": os.uname().nodename, "pid": dead_pid(), "run_hash": run_hash()}
+    )
     new_run().run()
     assert len(cfm_calls) == 1
 
@@ -260,7 +275,9 @@ def test_stale_running_manifest_is_rerun(data_path, cfm_calls):
 @pytest.mark.parametrize("force", [False, True])
 def test_live_running_manifest_is_not_rerun(data_path, cfm_calls, force):
     os.makedirs(folder())
-    write_manifest(folder(), {"status": RUNNING, "host": os.uname().nodename, "pid": os.getpid(), "run_hash": run_hash()})
+    write_manifest(
+        folder(), {"status": RUNNING, "host": os.uname().nodename, "pid": os.getpid(), "run_hash": run_hash()}
+    )
     with pytest.raises(RuntimeError, match="being run"):
         new_run(force=force).run()
     assert cfm_calls == []

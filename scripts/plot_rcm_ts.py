@@ -6,33 +6,47 @@ The plots will show the temporal variability in the forcing data at the borehole
 - Overlay the time series for MAR and RACMO on the same plot for each variable to compare the two RCMs at each site.
 The resulting plots will be saved to the specified figure path.
 
+The forcing CSV of each RCM has the years of scripts/run_cfm.py for that RCM (force.years.run_years, DISC-001): the
+MAR CSVs are 1979-2024 and the RACMO CSVs 1979-2023, if end_year in config.yaml is 2024. --start-year and --end-year
+give the years of both, as they are.
+
 Usage:
-    python rcm_ts_plots.py
+    python plot_rcm_ts.py [--start-year <year>] [--end-year <year>]
 
 """
 
+import argparse
+import logging
 import os
 
 import matplotlib.pyplot as plt
 import pandas as pd
 
-import logging
-
-logging.basicConfig(level=logging.INFO)
-
 from cfm_config import config, sites
 from force.cache import forcing_csv_path
 from force.model_point import model_point, model_point_label, shared_model_points
+from force.years import add_year_arguments, run_years
+
+logging.basicConfig(level=logging.INFO)
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Plot the MAR and RACMO forcing time series at each site")
+    add_year_arguments(parser)
+    args = parser.parse_args()
+    years = {rcm: run_years(rcm, args.start_year, args.end_year) for rcm in ("MAR", "RACMO")}
+
     borehole_sites = sites()
     mar_data_dict: dict[str, pd.DataFrame] = {}
     racmo_data_dict: dict[str, pd.DataFrame] = {}
 
     for site, info in borehole_sites.items():
         # Load MAR and RACMO data for the model point of this site from the forcing cache
-        mar_data_dict[site] = pd.read_csv(forcing_csv_path(model_point(info, "MAR")))
-        racmo_data_dict[site] = pd.read_csv(forcing_csv_path(model_point(info, "RACMO")))
+        mar = years["MAR"]
+        racmo = years["RACMO"]
+        mar_data_dict[site] = pd.read_csv(forcing_csv_path(model_point(info, "MAR"), mar.start_year, mar.end_year))
+        racmo_data_dict[site] = pd.read_csv(
+            forcing_csv_path(model_point(info, "RACMO"), racmo.start_year, racmo.end_year)
+        )
 
     # model points of each site; also the inactive sites, to show all the sites that share a grid cell (FEAT-002)
     all_sites = sites(active_only=False)

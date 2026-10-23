@@ -43,7 +43,9 @@ def import_cfm(repo: str) -> tuple:
     """
     loaded = sys.modules.get("firn_density_nospin")
     if loaded is not None and os.path.realpath(os.path.dirname(loaded.__file__)) != os.path.realpath(repo):
-        raise RuntimeError(f"This process already imported the CFM from {os.path.dirname(loaded.__file__)}, not {repo}.")
+        raise RuntimeError(
+            f"This process already imported the CFM from {os.path.dirname(loaded.__file__)}, not {repo}."
+        )
     sys.path.append(repo)
     from RCMpkl_to_spin import makeSpinFiles  # type: ignore
     from firn_density_nospin import FirnDensityNoSpin  # type: ignore
@@ -62,6 +64,8 @@ class CFMRun:
         cfm_version: dict | None = None,
         force: bool = False,
         site: str | None = None,
+        requested_end_year: int | None = None,
+        end_year_source: str = "config",
     ) -> None:
         """Initialize CFM Run with configuration from config.yaml.
 
@@ -79,6 +83,9 @@ class CFMRun:
             force (bool): rerun even if a complete run exists in the output folder.
             site (str | None): name in sites.yaml of the site at borehole_lat/borehole_lon, for the manifest. Two sites
                 in one grid cell share a run; the manifest lists all the sites that asked for it.
+            requested_end_year (int | None): the end year that was asked for, before force.years.run_years clipped it
+                to the RCM data (DISC-001), for the manifest only. None: end_year of config.
+            end_year_source (str): where requested_end_year came from, "config" (config.yaml) or "cli" (--end-year).
         """
 
         # all these need to be passed in because they vary by run
@@ -99,6 +106,9 @@ class CFMRun:
 
         self._force: bool = force
         self._site: str | None = site
+        # the years of the run are start_year/end_year of config; these record what was asked for (not hashed)
+        self._requested_end_year: int = config["end_year"] if requested_end_year is None else requested_end_year
+        self._end_year_source: str = end_year_source
         self._cfm_version: dict = cfm_version or lookup_cfm_version()
         self._manifest: dict = {}
         self._model_point: ModelPoint | None = None
@@ -308,6 +318,8 @@ class CFMRun:
                 "rcm_name": self._rcm_name,
                 "start_year": config["start_year"],
                 "end_year": config["end_year"],
+                "requested_end_year": self._requested_end_year,
+                "end_year_source": self._end_year_source,
                 "spin_end_year": config["spin_end_year"],
                 "sublim_sf": config["sublim_sf"],
                 "rho_bottom": config["rho_bottom"],

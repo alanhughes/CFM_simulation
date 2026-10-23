@@ -721,7 +721,21 @@ def test_extract_forcing_script_years(cfg):
     assert record["start_year"] == 1979 and record["end_year"] == 1980
 
 
+def test_extract_forcing_script_clips_the_default_end_year(cfg, monkeypatch):
+    """An end_year from config.yaml after the data is clipped to the last complete year of the files (DISC-001)."""
+    monkeypatch.setitem(config, "end_year", 1985)
+    monkeypatch.setitem(config, "spin_end_year", 1980)
+    script = _load_extract_forcing_script()
+    script.main(["--rcm", "RACMO23", "--sites", "CI-0", "--no-cache", "--processes", "1"])
+    assert config["end_year"] == 1981
+    folder = os.path.dirname(ProcessRACMO23(*SITE_A)._save_path)
+    names = [name for name in os.listdir(folder) if name.endswith(".csv")]
+    assert len(names) == 1 and names[0].endswith("_1979_1981.csv"), names
+    with pytest.raises(ForcingCoverageError, match="before December 1985"):  # an explicit end year is not clipped
+        script.main(["--rcm", "RACMO23", "--sites", "CI-0", "--no-cache", "--end-year", "1985"])
+
+
 def test_extract_forcing_script_years_out_of_order(cfg):
     script = _load_extract_forcing_script()
-    with pytest.raises(SystemExit):
+    with pytest.raises(ValueError, match="start year 1981 is after end year 1980"):
         script.main(["--rcm", "RACMO23", "--sites", "CI-0", "--start-year", "1981", "--end-year", "1980"])

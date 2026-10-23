@@ -7,8 +7,12 @@ from config.yaml. The time series are saved to csv files, and the plots and csvs
 The runs are found from their manifests (sim.runs.find_run), with the CFM version from --cfm (default_cfm_version if
 not given).
 
+The years are those of scripts/run_cfm.py (force.years.run_years, DISC-001): start_year and end_year of config.yaml,
+with the end year clipped to the last complete year of the RCM data (RACMO: 1979-2023), or --start-year/--end-year as
+given.
+
 Usage:
-    - python calc_dh.py [--cfm <label>]
+    - python calc_dh.py [--cfm <label>] [--start-year <year>] [--end-year <year>]
 
 """
 
@@ -21,6 +25,7 @@ import matplotlib.pyplot as plt
 from cfm_config import cfm_version, config, sites
 from force.cache import forcing_csv_path
 from force.model_point import model_point, model_point_label, shared_model_points
+from force.years import add_year_arguments, run_years
 from sim.runs import find_run
 
 
@@ -55,12 +60,15 @@ def read_output_data(file_path):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Calculate and plot dh/dt for the sites in sites.yaml")
     parser.add_argument("--cfm", help="CFM version (a label in cfm_versions); default_cfm_version if not given")
-    cfm = cfm_version(parser.parse_args().cfm)["label"]
+    add_year_arguments(parser)
+    args = parser.parse_args()
+    cfm = cfm_version(args.cfm)["label"]
 
     borehole_sites = sites()
     phys_rho_options = ("GSFC2020", "HLdynamic", "Crocus", "Barnola1991", "Ligtenberg2011")
-    start, end = config["start_year"], config["end_year"]
     rcm_name = config["rcm_name"]
+    years = run_years(rcm_name, args.start_year, args.end_year)
+    start, end = years.start_year, years.end_year
     liquid = config["cfm_config"]["liquid"]
 
     # model point of each site; also the inactive sites, to show all the sites that share a grid cell (FEAT-002)
@@ -89,7 +97,9 @@ if __name__ == "__main__":
 
             # save
             output_df = pd.DataFrame({"TIME": input_df["TIME"], "dh_dt": dH_step})
-            output_df.to_csv(f"{save_dir}/dh_dt_time_series_{site}_{phys_rho}_{liquid}_{rcm_name}_{cfm}.csv", index=False)
+            output_df.to_csv(
+                f"{save_dir}/dh_dt_time_series_{site}_{phys_rho}_{liquid}_{rcm_name}_{cfm}.csv", index=False
+            )
 
         plt.xlabel("Time")
         plt.ylabel("dh/dt (m/day)")

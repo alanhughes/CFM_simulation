@@ -6,15 +6,19 @@ config.yaml file if no command line arguments are provided.
 
 Usage:
     python plot_cfm.py --site CI-0 --physrhols GSFC2020 Crocus --rcm RACMO --liquid bucket [--cfm <label>]
+    python plot_cfm.py ... --start-year 1979 --end-year 2020
 
 The runs are found from their manifests (sim.runs.find_run), with the CFM version from --cfm (default_cfm_version if
-not given).
+not given). The years are those of scripts/run_cfm.py (force.years.run_years, DISC-001): start_year and end_year of
+config.yaml, with the end year clipped to the last complete year of the RCM data (RACMO: 1979-2023), or
+--start-year/--end-year as given.
 """
 
 import argparse
 import logging
 
 from cfm_config import config, get_site
+from force.years import add_year_arguments
 from plot.results import ResultsPlotter
 
 logging.basicConfig(level=logging.INFO)
@@ -23,6 +27,7 @@ logging.basicConfig(level=logging.INFO)
 def default_phys_rho(cfm_config: dict) -> list:
     """The densification schemes to plot when no argument is given: the one scheme in cfm_config.physRho (BUG-201)."""
     return [cfm_config["physRho"]]
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run CFM plotting with optional command line arguments")
@@ -44,15 +49,13 @@ if __name__ == "__main__":
         help="Meltwater scheme to use (currently only bucket)",
     )
 
-    parser.add_argument("--cfm", type=str, help="CFM version (a label in cfm_versions); default_cfm_version if not given")
+    parser.add_argument(
+        "--cfm", type=str, help="CFM version (a label in cfm_versions); default_cfm_version if not given"
+    )
+    add_year_arguments(parser)
 
     args = parser.parse_args()
-    if (
-        args.site is not None
-        and args.physrhols is not None
-        and args.rcm is not None
-        and args.liquid is not None
-    ):
+    if args.site is not None and args.physrhols is not None and args.rcm is not None and args.liquid is not None:
         logging.info(
             f"Using command line arguments: site={args.site}, physrho={args.physrhols}, rcm={args.rcm}, liquid={args.liquid}"
         )
@@ -67,4 +70,6 @@ if __name__ == "__main__":
         liquid = config["cfm_config"]["liquid"]
         logging.info("Using borehole location and physrho from config.yaml")
 
-    ResultsPlotter(site.name, phys_rho, rcm_name, liquid, cfm=args.cfm).plot()
+    ResultsPlotter(
+        site.name, phys_rho, rcm_name, liquid, cfm=args.cfm, start_year=args.start_year, end_year=args.end_year
+    ).plot()
