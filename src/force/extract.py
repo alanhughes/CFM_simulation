@@ -2,7 +2,9 @@
 
 The RACMO and MAR files store each day as one compressed HDF5 chunk of the full map, so reading one cell costs as much
 as reading the whole file. This module therefore reads each (variable, file) pair once with h5py, in parallel worker
-processes, and keeps every requested cell from it. Extra cells cost no extra reads from the share.
+processes, and keeps every requested cell from it. Extra cells cost no extra reads from the share. The workers start
+with forkserver (spawn on macOS and Windows), so they import the main script again: a script that starts the extraction
+must do its work inside `if __name__ == "__main__":` (BUG-008, see _start_method).
 
 h5py does not decode the data as xarray does, so this module does it itself: CF time units and calendar, _FillValue
 and missing_value (to NaN), scale_factor and add_offset. The derived columns (rain and albedo), the unit factors and
@@ -361,17 +363,24 @@ def _read_file(job) -> Tuple[str, str, pd.DatetimeIndex, np.ndarray, int]:
     return path, var, times, values, n_bytes
 
 
+def _start_method() -> str:
+    """The multiprocessing start method of the workers: forkserver on Linux, spawn elsewhere (BUG-008)."""
+    # Not fork: the parent has threads (numpy, HDF5, dask, pytest), and fork copies a lock that another thread holds,
+    # so a worker can wait for all time. forkserver forks the workers from a new single-threaded server process.
+    # macOS and Windows use spawn (Windows has no forkserver; spawn is the macOS default).
+    # With forkserver and spawn, the main script is imported again as __mp_main__ (once in the server, or in each
+    # spawn worker), so a script that starts the extraction must do its work inside `if __name__ == "__main__":`.
+    # Without the guard, the script runs again, and the pool stops with BrokenProcessPool. Each worker also imports
+    # force (and cfm_config, which reads config.yaml in the folder of the parent) to unpickle _read_file; this takes
+    # about 1 s.
+    return "forkserver" if sys.platform.startswith("linux") else "spawn"
+
+
 def _map_jobs(jobs: Sequence, processes: int) -> Iterable:
     if processes <= 1 or len(jobs) <= 1:
         return map(_read_file, jobs)
-    # fork on Linux: the workers need no new imports, and a caller needs no `if __name__ == "__main__":` guard
-    # (spawn and forkserver import the main script again in each worker, so a script without the guard runs again).
-    # The parent holds no open HDF5 file at this point. Elsewhere (macOS, Windows) fork is not safe, so use spawn;
-    # there the calling script must have the guard.
-    method = "fork" if sys.platform.startswith("linux") else "spawn"
-    executor = ProcessPoolExecutor(
-        max_workers=min(processes, len(jobs)), mp_context=multiprocessing.get_context(method)
-    )
+    context = multiprocessing.get_context(_start_method())
+    executor = ProcessPoolExecutor(max_workers=min(processes, len(jobs)), mp_context=context)
 
     def results():
         with executor:
@@ -800,7 +809,7 @@ def process_fast(
 
     Existing CSVs are checked and skipped, as in ProcessBase.process, unless overwrite is true. Processors that share
     a model point share one CSV. The cache box contains cache_sites (default: all active sites in sites.yaml) and the
-    locations of the processors.
+    locations of the processors. The calling script must have the `if __name__ == "__main__":` guard (BUG-008).
     """
     from cfm_config import config, sites
 

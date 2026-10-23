@@ -191,6 +191,8 @@ class ProcessMAR(ProcessBase):
 
         The extraction reads the MAR files in one parallel pass, through the local cache around the sites. It stops
         with ForcingCoverageError if the files do not include all the years from start_year to end_year (BUG-003).
+        The worker processes import the main script again, so the script that calls this must do its work inside
+        `if __name__ == "__main__":` (BUG-008).
         """
 
         from .extract import process_fast
@@ -251,6 +253,8 @@ class ProcessRACMO(ProcessBase):
 
         The extraction reads the RACMO files in one parallel pass, through the local cache around the sites. It stops
         with ForcingCoverageError if the files do not include all the years from start_year to end_year (BUG-003).
+        The worker processes import the main script again, so the script that calls this must do its work inside
+        `if __name__ == "__main__":` (BUG-008).
         """
 
         from .extract import process_fast

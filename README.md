@@ -164,6 +164,8 @@ Forcing is extracted once per model point, into a cache shared by all CFM versio
 
 The `RACMO`, `RACMO23` and `MAR` forcing is extracted with `h5py` in one parallel pass over the files (`src/force/extract.py`). Each HDF5 chunk is a full daily map, so any method must read all the bytes (66 GB for `RACMO`, 47 GB for `RACMO23`, 24 GB for `MAR` 1979-2024). One pass takes approximately 1.5 minutes (`MAR`) to 5 minutes, and `forcing_processes` (default 8) sets the number of worker processes. The first pass also keeps all grid cells in a box around the active sites in `sites.yaml` in a local `cache.h5` (next to the forcing CSVs; `forcing_cache`, `forcing_cache_dir` and `forcing_cache_margin` in `config.example.yaml`). A later site inside the box then takes under one second. `python scripts/extract_forcing.py` makes the forcing for all active sites in one pass (`--rcm MAR` for MAR). For `MAR`, the extraction keeps `SECTOR` = `sector` and the surface layer (`OUTLAY` = 0), as the old code did.
 
+The worker processes start with `forkserver` on Linux (`spawn` on macOS and Windows), not `fork`, which can deadlock in a process with threads (BUG-008). Each worker therefore imports the main script again. A script that starts the extraction, directly or through `ProcessRACMO`/`ProcessRACMO23`/`ProcessMAR.process()`, must do its work inside `if __name__ == "__main__":`, as `scripts/run_cfm.py` and `scripts/extract_forcing.py` do. Without the guard, the pool stops with `BrokenProcessPool`.
+
 ## Sanity check
 
 The CFM's own example verifies the model side independently of any forcing data:
