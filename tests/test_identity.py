@@ -197,10 +197,31 @@ def test_wrapper_not_a_git_checkout_is_refused():
         check_wrapper_identity(None)
 
 
+def excluded_module(path: str) -> str:
+    """The module name of a RUN_CODE_EXCLUDED path: src/plot/ is plot, src/sim/runs.py is sim.runs."""
+    return path.removeprefix("src/").rstrip("/").removesuffix(".py").replace("/", ".")
+
+
+def test_excluded_module():
+    assert [excluded_module(path) for path in ("src/plot/", "src/sim/runs.py")] == ["plot", "sim.runs"]
+
+
 def test_cfm_run_does_not_import_the_excluded_code():
-    """The run hash leaves out RUN_CODE_EXCLUDED (src/plot/). This is safe only if a CFM run does not import it."""
-    code = "import sys, sim.worker, sim.run, sim.manifest, sim.identity; print(sorted(m.split('.')[0] for m in sys.modules))"
-    loaded = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True).stdout
+    """run_code_sha256 leaves out RUN_CODE_EXCLUDED (src/plot/, src/sim/runs.py). This is safe only if a CFM run does
+    not import it."""
+    code = "import sys, sim.worker, sim.run, sim.manifest, sim.identity; print('\\n'.join(sorted(sys.modules)))"
+    loaded = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True).stdout.split()
+    assert "sim.run" in loaded
     for excluded in sim.identity.RUN_CODE_EXCLUDED:
-        package = excluded.removeprefix("src/").rstrip("/")
-        assert f"'{package}'" not in loaded
+        module = excluded_module(excluded)
+        assert not [name for name in loaded if name == module or name.startswith(f"{module}.")], module
+
+
+def test_run_code_ignores_the_excluded_files(wrapper_repo):
+    before = wrapper_identity()
+    (wrapper_repo / "src" / "sim").mkdir()
+    (wrapper_repo / "src" / "sim" / "runs.py").write_text("z = 1\n")
+    commit_all(wrapper_repo)
+    assert wrapper_identity()["run_code_sha256"] == before["run_code_sha256"]
+    (wrapper_repo / "src" / "sim" / "runs.py").write_text("z = 2\n")
+    check_wrapper_identity(wrapper_identity())  # an uncommitted change to it is not refused

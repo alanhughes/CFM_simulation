@@ -66,9 +66,19 @@ def check_cfm_identity(identity: dict) -> None:
         logging.warning(f"CFM checkout {repo} has uncommitted changes to files that are not code: {', '.join(other)}.")
 
 
-# the folders of src/ that a CFM run does not import (tests/test_identity.py checks this). A change to them does not
-# change the run hash, and they can have uncommitted changes
-RUN_CODE_EXCLUDED = ("src/plot/",)
+# the version of the run code (src/ without RUN_CODE_EXCLUDED), in the run hash in place of a hash of the code
+# (FEAT-005). Version 1 is the run code at dev b89d566 and d53fd13. Increase it in the same commit as a change that can
+# change the results of a CFM run: the forcing that sim.run gives to the CFM (units, signs, column maps, the spin-up),
+# the cfm_config that sim.run makes, or a default value that a run uses. Do not increase it for comments, docstrings,
+# log messages, names of local variables, a refactor that gives the same values, or code that a CFM run does not
+# import (src/plot/, src/sim/runs.py, scripts/). If you are not sure, increase it: a new version costs only new runs,
+# but an old version for a different result gives incorrect results. The drift warning of sim.run tells you when the
+# run code changed since the runs of this version
+RUN_CODE_VERSION = 1
+
+# the files and folders of src/ that a CFM run does not import (tests/test_identity.py checks this). They are not in
+# run_code_sha256, so a change to them gives no drift warning, and they can have uncommitted changes
+RUN_CODE_EXCLUDED = ("src/plot/", "src/sim/runs.py")
 
 
 def _is_run_code(path: str) -> bool:
