@@ -4,6 +4,7 @@ The old folders are small files in tmp_path. The RCM grid is a stub, so no luna 
 an HDF5 file, except in the tests of the spin-up (FEAT-004), which write a small one with h5py.
 """
 
+import dataclasses
 import importlib.util
 import os
 from pathlib import Path
@@ -49,11 +50,17 @@ def write_forcing(path: Path, blocks: int = 3, block_years: int = 2, cut: int = 
 
 
 def make_source(
-    root: Path, results: bytes = b"results", config_json: bool = True, csv_end: str = "2023-12-31", coords=None
+    root: Path,
+    results: bytes = b"results",
+    config_json: bool = True,
+    csv_end: str = "2023-12-31",
+    coords=None,
+    forcing=None,
 ) -> Path:
     """An old CFM_data folder: cfm_output/<name>/ with .hdf5 files, and cfm_input/ with the forcing CSV.
 
-    coords is the (lat, lon) text of the folder name, ("-66.403", "-63.376") by default."""
+    coords is the (lat, lon) text of the folder name, ("-66.403", "-63.376") by default. forcing is a function that
+    writes CFMforcing.hdf5 to the path that it is given; by default the file is not HDF5."""
     lat, lon = coords or ("-66.403", "-63.376")
     name = f"CFMoutput_{lat}_{lon}_1979_2024_GSFC2020_bucket_RACMO"
     output = root / "cfm_output"
@@ -61,6 +68,8 @@ def make_source(
     (output / name / "CFMresults.hdf5").write_bytes(results)
     (output / name / "CFMspin.hdf5").write_bytes(b"spin")
     (output / name / "CFMforcing.hdf5").write_bytes(b"forcing")
+    if forcing is not None:
+        forcing(output / name / "CFMforcing.hdf5")
     if config_json:
         (output / (name.replace("CFMoutput_", "CFMconfig_") + ".json")).write_text(
             '{"physRho": "GSFC2020", "resultsFolder": "/old/path"}'
@@ -117,7 +126,7 @@ def test_copy(data_path):
     (run,) = find_runs(model_point="RACMO_261_125")
     manifest = read_manifest(run.folder)
     assert manifest["status"] == COMPLETE
-    assert manifest["hash_inputs"]["hash_version"] == "migrated-1"
+    assert manifest["hash_inputs"]["hash_version"] == "migrated-2"
     assert manifest["migrated"]["source"] == str(source / NAME)
     assert manifest["run"]["sites"] == ["CI-0"]
     assert manifest["run"]["site_coords"] == {"CI-0": [-66.403, -63.376]}
@@ -207,3 +216,45 @@ def test_measure_spin_of_a_file_that_is_not_hdf5_is_none(tmp_path):
         file["other/time"] = np.arange(4.0)  # no main/time
     assert migrate.measure_spin(str(path), 1979) is None
 
+
+def test_spin_end_year_is_in_the_hash(data_path):
+    source = make_source(data_path / "old", forcing=write_forcing)
+    (plan,) = migrate.build_plans([("x", str(source))])
+    assert plan.spin_end_year == 1980 and plan.hash_inputs["spin_end_year"] == 1980
+    other = dataclasses.replace(plan, spin={**plan.spin, "spin_end_year": 1981})
+    unknown = dataclasses.replace(plan, spin=None)
+    hashes = {migrate.run_hash(migrate.migrated_hash_inputs(p)) for p in (plan, other, unknown)}
+    assert len(hashes) == 3
+
+
+def test_manifest_has_the_spin_up(data_path, capsys):
+    source = make_source(data_path / "old", forcing=write_forcing)
+    assert migrate.main(["--source", "x", str(source)]) == 0
+    out = capsys.readouterr().out
+    assert "spin_end_year 1980 (3 blocks of 8 steps from 1973)" in out
+    assert "COPY of x by spin_end_year: 1980 1" in out
+    assert migrate.main(["--source", "x", str(source), "--copy"]) == 0
+    (run,) = find_runs()
+    manifest = run.manifest
+    assert manifest["run"]["spin_end_year"] == 1980
+    assert manifest["hash_inputs"]["spin_end_year"] == 1980
+    assert manifest["migrated"]["spin"] == {
+        "spin_start": 1973.0, "block_steps": 8, "blocks": 3, "method": "measured from CFMforcing.hdf5"
+    }
+    assert "spin_end_year" not in manifest["migrated"]["unknown"]
+    assert "sublim_sf" in manifest["migrated"]["unknown"]
+    assert not any("spin-up is not measured" in note for note in manifest["migrated"]["notes"])
+
+
+def test_manifest_with_no_spin_up(data_path, capsys):
+    """CFMforcing.hdf5 of make_source is not HDF5: the spin-up is not measured, and this is not an error."""
+    source = make_source(data_path / "old")
+    assert migrate.main(["--source", "x", str(source), "--copy"]) == 0
+    assert "COPY of x by spin_end_year: None 1" in capsys.readouterr().out
+    (run,) = find_runs()
+    manifest = run.manifest
+    assert manifest["run"]["spin_end_year"] is None
+    assert manifest["hash_inputs"]["spin_end_year"] is None
+    assert manifest["migrated"]["spin"] is None
+    assert "spin_end_year" in manifest["migrated"]["unknown"]
+    assert any("spin-up is not measured" in note for note in manifest["migrated"]["notes"])
