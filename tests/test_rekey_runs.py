@@ -159,8 +159,9 @@ def test_rekey_gives_the_run_hash_of_now(cfm_calls, monkeypatch, capsys, caplog)
     assert old != new and os.path.dirname(old) == os.path.dirname(new)
     before = files(old)
 
-    assert rekey.main(["--run-code-version", "1"]) == 0  # the dry run changes nothing
+    assert rekey.main([]) == 0  # the dry run changes nothing
     out = capsys.readouterr().out
+    assert out.splitlines()[0] == "Run code version: 1 (RUN_CODE_VERSION in src/sim/identity.py)"
     assert f"REKEY   {old}\n        -> {new}" in out
     manifest = read_manifest(old)
     assert f"run_hash {manifest['run_hash']} -> {expected['run_hash']}" in out
@@ -168,7 +169,7 @@ def test_rekey_gives_the_run_hash_of_now(cfm_calls, monkeypatch, capsys, caplog)
     assert f"{run_code_sha256(commit, OLD_RULE)} -> {run_code_sha256(commit)} (commit {commit}" in out
     assert files(old) == before and not os.path.exists(new)
 
-    assert rekey.main(["--run-code-version", "1", "--apply"]) == 0
+    assert rekey.main(["--apply"]) == 0
     assert not os.path.exists(old)
     after = files(new)
     assert {name: data for name, data in after.items() if name != "manifest.json"} == {
@@ -200,10 +201,10 @@ def test_rekey_gives_the_run_hash_of_now(cfm_calls, monkeypatch, capsys, caplog)
 
 def test_second_apply_selects_nothing(cfm_calls, monkeypatch, capsys):
     expected = make_old_run(monkeypatch)
-    assert rekey.main(["--run-code-version", "1", "--apply"]) == 0
+    assert rekey.main(["--apply"]) == 0
     manifest = read_manifest(expected["new_folder"])
     capsys.readouterr()
-    assert rekey.main(["--run-code-version", "1", "--apply"]) == 0
+    assert rekey.main(["--apply"]) == 0
     assert "Summary: 0 runs of hash_version 2" in capsys.readouterr().out
     assert read_manifest(expected["new_folder"]) == manifest
 
@@ -219,14 +220,14 @@ def test_a_stop_after_the_rename_is_finished(cfm_calls, monkeypatch, capsys):
     with monkeypatch.context() as patch:
         patch.setattr(rekey, "write_manifest", stop)
         with pytest.raises(KeyboardInterrupt):
-            rekey.main(["--run-code-version", "1", "--apply"])
+            rekey.main(["--apply"])
     assert not os.path.exists(expected["old_folder"])
     assert read_manifest(expected["new_folder"])["hash_inputs"]["hash_version"] == 2
 
     capsys.readouterr()
-    assert rekey.main(["--run-code-version", "1"]) == 0
+    assert rekey.main([]) == 0
     assert f"FINISH  {expected['new_folder']}" in capsys.readouterr().out
-    assert rekey.main(["--run-code-version", "1", "--apply"]) == 0
+    assert rekey.main(["--apply"]) == 0
     manifest = read_manifest(expected["new_folder"])
     assert manifest["run_hash"] == expected["run_hash"]
     assert manifest["hash_inputs"] == expected["hash_inputs"]
@@ -258,7 +259,7 @@ def test_a_run_of_other_code_is_refused(cfm_calls, monkeypatch, capsys, change):
     change_old_run(expected["old_folder"], change)
     (folder,) = [entry.path for entry in os.scandir(os.path.dirname(expected["old_folder"]))]
     before = files(folder)
-    assert rekey.main(["--run-code-version", "1", "--apply"]) == 1
+    assert rekey.main(["--apply"]) == 1
     assert "REFUSE" in capsys.readouterr().out
     assert files(folder) == before
     assert sorted(os.listdir(os.path.dirname(folder))) == [os.path.basename(folder)]
@@ -268,7 +269,7 @@ def test_an_existing_target_is_refused(cfm_calls, monkeypatch, capsys):
     expected = make_old_run(monkeypatch)
     os.makedirs(expected["new_folder"])
     before = files(expected["old_folder"])
-    assert rekey.main(["--run-code-version", "1", "--apply"]) == 1
+    assert rekey.main(["--apply"]) == 1
     assert "the new folder" in capsys.readouterr().out
     assert files(expected["old_folder"]) == before
     assert os.listdir(expected["new_folder"]) == []
@@ -279,7 +280,7 @@ def test_a_wrong_run_hash_is_refused(cfm_calls, monkeypatch, capsys):
     manifest = read_manifest(expected["old_folder"])
     manifest["hash_inputs"]["forcing_csv_sha256"] = "changed"
     write_manifest(expected["old_folder"], manifest)
-    assert rekey.main(["--run-code-version", "1", "--apply"]) == 1
+    assert rekey.main(["--apply"]) == 1
     assert "not the hash of its hash_inputs" in capsys.readouterr().out
     assert os.path.exists(expected["old_folder"])
 
@@ -299,14 +300,14 @@ def test_other_runs_are_not_selected(cfm_calls, monkeypatch, capsys, change):
     change(manifest)
     write_manifest(expected["old_folder"], manifest)
     before = files(expected["old_folder"])
-    assert rekey.main(["--run-code-version", "1", "--apply"]) == 0
+    assert rekey.main(["--apply"]) == 0
     assert "Summary: 0 runs" in capsys.readouterr().out
     assert files(expected["old_folder"]) == before
 
 
 def test_a_new_run_is_not_selected(cfm_calls, capsys):
     CFMRun(*SITE, VERSION).run()
-    assert rekey.main(["--run-code-version", "1", "--apply"]) == 0
+    assert rekey.main(["--apply"]) == 0
     assert "Summary: 0 runs" in capsys.readouterr().out
     assert COMPLETE == read_manifest(cfm_calls[0])["status"]
 
@@ -315,7 +316,7 @@ def test_the_rekey_does_not_hide_a_later_change(cfm_calls, monkeypatch, wrapper_
     """The re-keyed run has the run code of its commit. After a later change to the run code, the drift warning
     occurs, as for a new run."""
     make_old_run(monkeypatch)
-    assert rekey.main(["--run-code-version", "1", "--apply"]) == 0
+    assert rekey.main(["--apply"]) == 0
     assert run_code_drift(wrapper_identity()) is None
     (wrapper_repo / "src" / "sim" / "runs.py").write_text("z = 2\n")  # not run code now
     commit_all(wrapper_repo)
@@ -329,7 +330,7 @@ def test_one_run_at_the_new_code_ends_the_warning(cfm_calls, monkeypatch, wrappe
     """A re-keyed set of runs of one commit, then a change to the run code that needs no new version: the first run
     warns, and after one complete run at the new code, no run warns (FEAT-005 open question 3)."""
     old = [make_old_run(monkeypatch, physRho) for physRho in ("GSFC2020", "KuipersMunneke2015")]
-    assert rekey.main(["--run-code-version", "1", "--apply"]) == 0
+    assert rekey.main(["--apply"]) == 0
     for run in old:  # they finished some days before; the runs of this test can finish in the same second
         write_manifest(run["new_folder"], {**read_manifest(run["new_folder"]), "finished": "2026-10-20T12:00:00+00:00"})
     old_commit = read_manifest(old[0]["new_folder"])["wrapper"]["commit"]
@@ -348,3 +349,20 @@ def test_one_run_at_the_new_code_ends_the_warning(cfm_calls, monkeypatch, wrappe
     assert "Complete run found" in caplog.text
     assert "The run code changed" not in caplog.text
     assert len(cfm_calls) == 3
+
+
+def test_the_version_is_run_code_version(cfm_calls, monkeypatch, capsys):
+    """MIG-003 open question 1: the script has no --run-code-version. It uses RUN_CODE_VERSION, and prints it first."""
+    with pytest.raises(SystemExit):
+        rekey.main(["--run-code-version", "1"])
+    expected = make_old_run(monkeypatch)
+    monkeypatch.setattr(rekey, "RUN_CODE_VERSION", 2)
+    capsys.readouterr()
+    assert rekey.main(["--apply"]) == 0
+    assert capsys.readouterr().out.splitlines()[0] == "Run code version: 2 (RUN_CODE_VERSION in src/sim/identity.py)"
+    (folder,) = [entry.path for entry in os.scandir(os.path.dirname(expected["old_folder"]))]
+    manifest = read_manifest(folder)
+    assert manifest["hash_inputs"]["wrapper_run_code_version"] == 2
+    assert manifest["wrapper"]["run_code_version"] == 2
+    assert manifest["rekeyed"]["run_code_version"] == 2
+    assert manifest["run_hash"] != expected["run_hash"]  # not the run of version 1

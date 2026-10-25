@@ -1,8 +1,9 @@
 """Give the new runs of hash_version 2 the run hash of hash_version 3, without doing them again (FEAT-005, MIG-003).
 
 hash_version 3 has the run code version (wrapper_run_code_version, RUN_CODE_VERSION) in place of the hash of the run
-code (wrapper_run_code_sha256). The user gives the run code version of the runs with --run-code-version. The script
-selects the manifests in {CFM_data_path}/runs with no "migrated" key, status "complete" and hash_version 2. For each
+code (wrapper_run_code_sha256). The script gives the runs the run code version of this code, RUN_CODE_VERSION in
+src/sim/identity.py, and prints it on the first line of its output (MIG-003 open question 1). The script selects the
+manifests in {CFM_data_path}/runs with no "migrated" key, status "complete" and hash_version 2. For each
 one it:
 
 1. Checks the manifest: its run_hash is the hash of its hash_inputs, and its wrapper.run_code_sha256 is the run code of
@@ -25,8 +26,8 @@ any .hdf5 file. The site links in sites/ go to the model point folders, so they 
 The default is a dry run: it prints each run, and writes nothing. If a run is refused, --apply changes nothing.
 
 Usage:
-    python scripts/rekey_runs.py --run-code-version 1            # dry run (the default)
-    python scripts/rekey_runs.py --run-code-version 1 --apply    # rename the folders and write the manifests
+    python scripts/rekey_runs.py            # dry run (the default)
+    python scripts/rekey_runs.py --apply    # rename the folders and write the manifests
 """
 
 import argparse
@@ -194,23 +195,18 @@ def apply(plan: Rekey, run_code_version: int) -> None:
 
 def main(argv: List[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--run-code-version", type=int, required=True, help="The run code version of the runs")
     parser.add_argument("--apply", action="store_true", help="Rename the folders and write the manifests")
     args = parser.parse_args(argv)
 
+    version = RUN_CODE_VERSION
+    print(f"Run code version: {version} (RUN_CODE_VERSION in src/sim/identity.py)")
     if HASH_VERSION != TO_HASH_VERSION:
         print(f"ERROR: this script makes hash_version {TO_HASH_VERSION}, not {HASH_VERSION}.", file=sys.stderr)
         return 1
-    if args.run_code_version < 1:
-        parser.error("--run-code-version must be 1 or more.")
-
-    version = args.run_code_version
     if args.apply:
         print(f"APPLY in {runs_root()}\n")
     else:
         print(f"DRY RUN: no folder is renamed and no file is written. {runs_root()}\n")
-    if version != RUN_CODE_VERSION:
-        print(f"Note: RUN_CODE_VERSION of this code is {RUN_CODE_VERSION}, not {version}.\n")
     plans = build_plans(version)
     for plan in plans:
         commit = plan.manifest.get("wrapper", {}).get("commit")
