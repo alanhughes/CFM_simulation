@@ -173,6 +173,7 @@ def test_run_code_ignores_commits_outside_it(wrapper_repo):
     (wrapper_repo / "src" / "plot" / "results.py").write_text("y = 2\n")
     commit_all(wrapper_repo)
     after = wrapper_identity()
+    assert after["run_code_version"] == sim.identity.RUN_CODE_VERSION
     assert after["commit"] != before["commit"]
     assert after["run_code_sha256"] == before["run_code_sha256"]
     (wrapper_repo / "src" / "run.py").write_text("x = 2\n")

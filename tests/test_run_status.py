@@ -55,7 +55,7 @@ def cfm_calls(monkeypatch):
 def identities(monkeypatch):
     """Stub out the model point (which reads the RCM grid) and the identities (which run git and pip freeze)."""
     cfm = dict(CFM_IDENTITY)
-    wrapper = {"commit": "w", "status": [], "src_tree": "tree", "run_code_sha256": "code"}
+    wrapper = {"commit": "w", "status": [], "src_tree": "tree", "run_code_version": 1, "run_code_sha256": "code"}
     monkeypatch.setattr(sim.run, "model_point_at", lambda lat, lon, rcm_name: MODEL_POINT)
     monkeypatch.setattr(sim.run, "measure_cfm_identity", lambda version: {**version, **cfm})
     monkeypatch.setattr(sim.run, "check_cfm_identity", lambda identity: None)
@@ -168,10 +168,10 @@ def test_site_coords_are_not_in_the_run_hash(data_path, cfm_calls):
         lambda ids: ids["cfm"].update(commit="def"),
         lambda ids: ids["cfm"].update(code_diff_sha256="e"),
         lambda ids: ids["cfm"].update(pip_freeze=["a==2"]),
-        lambda ids: ids["wrapper"].update(run_code_sha256="code2"),
+        lambda ids: ids["wrapper"].update(run_code_version=2),
         lambda ids: open(forcing_csv_path(MODEL_POINT), "a").write("1979-01-02,251.0\n"),
     ],
-    ids=["cfm_config", "wrapper_param", "cfm_commit", "cfm_patch", "pip_freeze", "run_code", "forcing"],
+    ids=["cfm_config", "wrapper_param", "cfm_commit", "cfm_patch", "pip_freeze", "run_code_version", "forcing"],
 )
 def test_a_change_gives_a_new_run(data_path, cfm_calls, identities, monkeypatch, change):
     monkeypatch.setitem(config, "sublim_sf", config["sublim_sf"])
@@ -188,15 +188,30 @@ def test_a_change_gives_a_new_run(data_path, cfm_calls, identities, monkeypatch,
     [
         lambda ids: ids["cfm"].update(status=[" M CFMoutput_example/x.hdf5"], diff_sha256="x"),
         lambda ids: ids["wrapper"].update(commit="w2", status=[" M README.md"], src_tree="tree2"),
+        # the run code changed, with the same RUN_CODE_VERSION (FEAT-005)
+        lambda ids: ids["wrapper"].update(commit="w2", src_tree="tree2", run_code_sha256="code2"),
         lambda ids: ids["cfm"].update(repo="/elsewhere/CFM_main", python="/elsewhere/python"),
     ],
-    ids=["cfm_data_change", "wrapper_commit", "paths"],
+    ids=["cfm_data_change", "wrapper_commit", "run_code_same_version", "paths"],
 )
 def test_a_change_that_does_not_change_results_keeps_the_run(data_path, cfm_calls, identities, change):
     new_run(site="CI-0").run()
     change(identities)
     new_run(site="other").run()
     assert len(cfm_calls) == 1
+
+
+def test_manifest_records_the_run_code(data_path, cfm_calls):
+    """The run hash has the run code version only; the manifest also records the code (FEAT-005)."""
+    new_run().run()
+    manifest = read_manifest(folder())
+    assert manifest["hash_inputs"]["hash_version"] == 3
+    assert manifest["hash_inputs"]["wrapper_run_code_version"] == 1
+    assert "wrapper_run_code_sha256" not in manifest["hash_inputs"]
+    assert manifest["wrapper"]["run_code_version"] == 1
+    assert manifest["wrapper"]["run_code_sha256"] == "code"
+    assert manifest["wrapper"]["commit"] == "w"
+    assert manifest["wrapper"]["src_tree"] == "tree"
 
 
 def test_hash_ignores_the_forcing_json(data_path, cfm_calls):

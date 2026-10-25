@@ -88,11 +88,11 @@ def _is_run_code(path: str) -> bool:
 def wrapper_identity() -> dict | None:
     """Commit, local changes and the run code of this repo, or None if it is not a git checkout.
 
-    The run code is src/ without RUN_CODE_EXCLUDED, at HEAD. run_code_sha256 is the SHA-256 of its git ls-tree list
-    (the path and blob hash of each file). The run hash uses it, not the commit, so a commit that changes only docs,
-    scripts, tests or src/plot/ gives the same run hash. src_tree (git rev-parse HEAD:src) is recorded only.
-    src_code_changes are the uncommitted .py changes in the run code, which check_wrapper_identity() refuses, as
-    run_code_sha256 does not include them.
+    The run code is src/ without RUN_CODE_EXCLUDED, at HEAD. The run hash uses run_code_version (RUN_CODE_VERSION), not
+    the code itself, so only a new version gives new runs (FEAT-005). run_code_sha256 is the SHA-256 of the git
+    ls-tree list of the run code (the path and blob hash of each file). It is recorded only, like the commit and
+    src_tree (git rev-parse HEAD:src). src_code_changes are the uncommitted .py changes in the run code, which
+    check_wrapper_identity() refuses, so that the recorded commit always gives the code of the run.
     """
     try:
         commit = _run("git", "-C", _REPO_ROOT, "rev-parse", "HEAD").strip()
@@ -107,6 +107,7 @@ def wrapper_identity() -> dict | None:
         "commit": commit,
         "status": status.splitlines(),
         "src_tree": _run("git", "-C", _REPO_ROOT, "rev-parse", "HEAD:src").strip(),
+        "run_code_version": RUN_CODE_VERSION,
         "run_code_sha256": hashlib.sha256("\n".join(run_code).encode()).hexdigest(),
         "src_code_changes": [
             path for path in changed_paths(src_status) if path.endswith(".py") and _is_run_code(path)
@@ -121,5 +122,5 @@ def check_wrapper_identity(identity: dict | None) -> None:
     if identity["src_code_changes"]:
         raise RuntimeError(
             f"{identity['path']} has uncommitted code changes in src/: {', '.join(identity['src_code_changes'])}. "
-            "Commit them first, so that the run hash includes them."
+            "Commit them first, so that the manifest records the code of the run."
         )

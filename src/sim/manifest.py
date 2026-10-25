@@ -30,7 +30,9 @@ COMPLETE = "complete"
 FAILED = "failed"
 
 # a change to the content of run_hash_inputs() must change this number, so that the old and new hashes differ
-HASH_VERSION = 2  # 2: the run code (src/ without src/plot/) in place of the src/ tree
+# 2: the run code (src/ without src/plot/) in place of the src/ tree. 3: RUN_CODE_VERSION in place of the hash of the
+# run code (FEAT-005)
+HASH_VERSION = 3
 
 # the wrapper parameters in config.yaml that change the results
 WRAPPER_PARAMS = ("start_year", "end_year", "spin_end_year", "sublim_sf", "rho_bottom")
@@ -53,7 +55,11 @@ def run_hash_inputs(
     cfm_identity: dict,
     wrapper_identity: dict,
 ) -> dict:
-    """The document that the run hash is made from. It has no times, host, pid, paths, site names or coordinates."""
+    """The document that the run hash is made from. It has no times, host, pid, paths, site names or coordinates.
+
+    Of this repo, it has only the run code version (RUN_CODE_VERSION, FEAT-005). The commit, the status, src_tree and
+    run_code_sha256 of wrapper_identity are in the manifest only.
+    """
     return {
         "hash_version": HASH_VERSION,
         "cfm_config": {key: value for key, value in cfm_config.items() if key not in _UNHASHED_CFM_CONFIG_KEYS},
@@ -61,7 +67,7 @@ def run_hash_inputs(
         "model_point": {"tag": model_point_tag, "release": rcm_release},
         "forcing_csv_sha256": forcing_csv_sha256,
         "cfm": {key: cfm_identity[key] for key in _HASHED_CFM_IDENTITY_KEYS},
-        "wrapper_run_code_sha256": wrapper_identity["run_code_sha256"],
+        "wrapper_run_code_version": wrapper_identity["run_code_version"],
     }
 
 
