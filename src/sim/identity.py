@@ -81,8 +81,16 @@ RUN_CODE_VERSION = 1
 RUN_CODE_EXCLUDED = ("src/plot/", "src/sim/runs.py")
 
 
-def _is_run_code(path: str) -> bool:
-    return path.startswith("src/") and not path.startswith(RUN_CODE_EXCLUDED)
+def _is_run_code(path: str, excluded: tuple[str, ...] = RUN_CODE_EXCLUDED) -> bool:
+    return path.startswith("src/") and not path.startswith(excluded)
+
+
+def run_code_sha256(commit: str = "HEAD", excluded: tuple[str, ...] = RUN_CODE_EXCLUDED) -> str:
+    """SHA-256 of the git ls-tree list (the path and blob hash of each file) of the run code at commit: src/ without
+    excluded. scripts/rekey_runs.py also gives the rule of hash_version 2, src/ without src/plot/ (FEAT-005)."""
+    tree = _run("git", "-C", _REPO_ROOT, "ls-tree", "-r", "--full-tree", commit, "src")
+    run_code = [line for line in tree.splitlines() if _is_run_code(line.split("\t", 1)[1], excluded)]
+    return hashlib.sha256("\n".join(run_code).encode()).hexdigest()
 
 
 def wrapper_identity() -> dict | None:
@@ -101,15 +109,13 @@ def wrapper_identity() -> dict | None:
         return None
     status = _run("git", "-C", _REPO_ROOT, "status", "--porcelain")
     src_status = _run("git", "-C", _REPO_ROOT, "status", "--porcelain", "--untracked-files=all", "--", ":/src")
-    tree = _run("git", "-C", _REPO_ROOT, "ls-tree", "-r", "--full-tree", "HEAD", "src")
-    run_code = [line for line in tree.splitlines() if _is_run_code(line.split("\t", 1)[1])]
     return {
         "path": _REPO_ROOT,
         "commit": commit,
         "status": status.splitlines(),
         "src_tree": _run("git", "-C", _REPO_ROOT, "rev-parse", "HEAD:src").strip(),
         "run_code_version": RUN_CODE_VERSION,
-        "run_code_sha256": hashlib.sha256("\n".join(run_code).encode()).hexdigest(),
+        "run_code_sha256": run_code_sha256(commit),
         "src_code_changes": [
             path for path in changed_paths(src_status) if path.endswith(".py") and _is_run_code(path)
         ],
