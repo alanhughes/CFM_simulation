@@ -26,6 +26,7 @@ from sim.manifest import (
     read_manifest,
     run_folder,
     run_hash,
+    run_code_drift,
     run_hash_inputs,
     write_manifest,
 )
@@ -33,6 +34,9 @@ from sim.manifest import (
 CFM_CONFIG_NAME = "CFMconfig.json"
 
 logging.basicConfig(level=logging.INFO)
+
+# whether this process gave the drift warning of warn_run_code_drift(), which it gives one time only
+_run_code_drift_warned = False
 
 
 def import_cfm(repo: str) -> tuple:
@@ -51,6 +55,28 @@ def import_cfm(repo: str) -> tuple:
     from firn_density_nospin import FirnDensityNoSpin  # type: ignore
 
     return makeSpinFiles, FirnDensityNoSpin
+
+
+def warn_run_code_drift(wrapper: dict) -> None:
+    """Warn, one time in each process, if the run code differs from that of the complete runs of its version.
+
+    The run hash has RUN_CODE_VERSION, not the run code (FEAT-005), so a change to the run code without a new version
+    reuses the runs of the old code. The warning does not stop the run: only the user can say if the change can
+    change the results.
+    """
+    global _run_code_drift_warned
+    if _run_code_drift_warned:
+        return
+    drifted = run_code_drift(wrapper)
+    if not drifted:
+        return
+    last = max(drifted, key=lambda other: other["finished"])
+    logging.warning(
+        f"The run code changed since the runs of run code version {wrapper['run_code_version']} "
+        f"(commit {last.get('commit')}). Increase RUN_CODE_VERSION in src/sim/identity.py if the change can change "
+        "the results."
+    )
+    _run_code_drift_warned = True
 
 
 class CFMRun:
@@ -169,7 +195,7 @@ class CFMRun:
         """Measure the CFM and the wrapper, find the forcing CSV, and make the run hash. Returns the run folder.
 
         Makes no folder and runs nothing. Stops with an error if the interpreter, the CFM checkout or src/ is not
-        correct, or if the forcing CSV does not exist.
+        correct, or if the forcing CSV does not exist. Warns if the run code changed without a new RUN_CODE_VERSION.
         """
         if os.path.realpath(sys.executable) != os.path.realpath(self._cfm_version["python"]):
             raise RuntimeError(
@@ -180,6 +206,7 @@ class CFMRun:
         check_cfm_identity(cfm_identity)
         self._wrapper_identity = wrapper = wrapper_identity()
         check_wrapper_identity(wrapper)
+        warn_run_code_drift(wrapper)
 
         # the forcing CSV must exist before the folder is made, so a missing CSV leaves nothing behind (BUG-004)
         self._model_point = model_point_at(self._borehole_lat, self._borehole_lon, self._rcm_name)

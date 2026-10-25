@@ -64,6 +64,12 @@ def identities(monkeypatch):
     return {"cfm": cfm, "wrapper": wrapper}
 
 
+@pytest.fixture(autouse=True)
+def drift_not_warned(monkeypatch):
+    """Each test is a new process for the drift warning, which occurs one time in each process (FEAT-005)."""
+    monkeypatch.setattr(sim.run, "_run_code_drift_warned", False)
+
+
 def new_run(**kwargs) -> CFMRun:
     return CFMRun(*SITE, VERSION, **kwargs)
 
@@ -335,3 +341,58 @@ def test_wrong_python_is_refused(data_path, cfm_calls):
         CFMRun(*SITE, {**VERSION, "python": "/usr/bin/false"}).run()
     assert cfm_calls == []
     assert not os.path.exists(data_path / "runs")
+
+
+DRIFT = "The run code changed since the runs of run code version 1 (commit w)."
+
+
+def drift_warnings(caplog) -> int:
+    return sum(DRIFT in record.getMessage() for record in caplog.records)
+
+
+def test_changed_run_code_of_the_same_version_warns_once(data_path, cfm_calls, identities, caplog):
+    """FEAT-005: the same version with a different run_code_sha256 gives the same run, and a warning."""
+    new_run().run()
+    assert drift_warnings(caplog) == 0
+    identities["wrapper"].update(commit="w2", run_code_sha256="code2")
+    new_run().run()
+    folder()
+    assert drift_warnings(caplog) == 1
+    assert "Increase RUN_CODE_VERSION in src/sim/identity.py" in caplog.text
+    assert len(cfm_calls) == 1  # the complete run is skipped: the warning does not stop or change the run
+    config["cfm_config"].update(conductivity="Calonne2011")
+    new_run().run()
+    assert len(cfm_calls) == 2
+
+
+def test_same_run_code_does_not_warn(data_path, cfm_calls, identities, caplog):
+    new_run().run()
+    identities["wrapper"].update(commit="w2", src_tree="tree2")
+    new_run(force=True).run()
+    assert drift_warnings(caplog) == 0
+    assert len(cfm_calls) == 2
+
+
+def test_other_runs_do_not_warn(data_path, cfm_calls, identities, caplog):
+    """Only a complete new run of the same version counts: not another version, a failed or migrated run, a manifest
+    from before FEAT-005 (hash_version 2, no wrapper.run_code_version) or a manifest that cannot be read."""
+    new_run().run()
+    other = {**identities["wrapper"], "run_code_sha256": "other"}
+    before_feat_005 = {key: value for key, value in other.items() if key != "run_code_version"}
+    manifests = {
+        "version2": {"status": COMPLETE, "wrapper": {**other, "run_code_version": 2}},
+        "failed": {"status": FAILED, "wrapper": other},
+        "migrated": {"status": COMPLETE, "wrapper": other, "migrated": {"from": "old"}},
+        "hash2": {"status": COMPLETE, "wrapper": before_feat_005},
+        "no_wrapper": {"status": COMPLETE, "wrapper": None},
+    }
+    for name, manifest in manifests.items():
+        path = data_path / "runs" / "RACMO_1_1" / "GSFC2020_bucket_1979-2024" / "test" / name
+        os.makedirs(path)
+        write_manifest(str(path), {"run_hash": name, **manifest})
+    broken = data_path / "runs" / "RACMO_1_1" / "GSFC2020_bucket_1979-2024" / "test" / "broken"
+    os.makedirs(broken)
+    (broken / "manifest.json").write_text("{")
+    new_run(force=True).run()
+    assert drift_warnings(caplog) == 0
+    assert len(cfm_calls) == 2

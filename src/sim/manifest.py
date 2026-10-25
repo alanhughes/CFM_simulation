@@ -15,6 +15,7 @@ The site names and coordinates are not in the run hash. A manifest from before r
 its first site only, in run.borehole_lat and run.borehole_lon.
 """
 
+import glob
 import hashlib
 import json
 import os
@@ -117,6 +118,32 @@ def write_manifest(folder: str, manifest: dict) -> None:
         json.dump(manifest, file, indent=4, default=str)
         file.write("\n")
     os.replace(tmp_path, path)
+
+
+def run_code_drift(wrapper: dict, root: str | None = None) -> list[dict]:
+    """The wrapper of each complete new run of the same run code version, but with a different run_code_sha256.
+
+    A run code version stands for one result of the run code (FEAT-005), so a different run_code_sha256 for one
+    version means that the run code changed without a new RUN_CODE_VERSION. This reads the manifests in runs/ as
+    sim.runs.find_runs does, but without sim.runs, which a CFM run does not import (RUN_CODE_EXCLUDED). It ignores the
+    migrated runs, as their wrapper code is not known, and the manifests with no wrapper.run_code_version (hash_version
+    2, from before FEAT-005): their run_code_sha256 includes src/sim/runs.py, so it cannot be compared. A manifest
+    that cannot be read is ignored too.
+    """
+    drifted = []
+    for path in sorted(glob.glob(os.path.join(root or runs_root(), "*", "*", "*", "*", MANIFEST_NAME))):
+        try:
+            manifest = read_manifest(os.path.dirname(path))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(manifest, dict) or "migrated" in manifest or manifest.get("status") != COMPLETE:
+            continue
+        other = manifest.get("wrapper")
+        if not isinstance(other, dict) or other.get("run_code_version") != wrapper["run_code_version"]:
+            continue
+        if other.get("run_code_sha256") != wrapper["run_code_sha256"]:
+            drifted.append({**other, "finished": manifest.get("finished") or ""})
+    return drifted
 
 
 def is_alive(manifest: dict) -> bool | None:
