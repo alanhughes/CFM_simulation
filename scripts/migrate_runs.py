@@ -51,6 +51,8 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import List, Optional
 
+import h5py
+import numpy as np
 import pandas as pd
 
 from cfm_config import config, format_coord, sites
@@ -140,6 +142,60 @@ def find_forcing_csv(cfm_output: str, rcm: str, lat: float, lon: float, start: i
         if (format_coord(csv_lat), format_coord(csv_lon)) == (format_coord(lat), format_coord(lon)):
             candidates.append(path)
     return candidates[0] if len(candidates) == 1 else None
+
+
+def measure_spin(path: str, start_year: int) -> Optional[dict]:
+    """The spin-up of an old run, measured from its CFMforcing.hdf5 (FEAT-004).
+
+    The CFM (makeSpinFiles) puts the forcing from spin_date_st to spin_date_end, repeated a whole number of times,
+    before the forcing of the main run. The spin-up is the steps of main/time before the first time that is not before
+    start_year. The block length L is the smallest length such that the number of spin-up steps is a multiple of L and
+    each forcing dataset of main/, in each block of L spin-up steps, is identical to the first L steps of the main run.
+    spin_end_year is the year of the main run at step L - 1. Do not use the length of the spin-up: the CFM finds the
+    number of blocks from the firn depth and the accumulation, so it changes from site to site.
+
+    Returns {"spin_end_year", "spin_start" (the first time of the spin-up), "block_steps" (L), "blocks"}, or None if
+    the file is not a readable HDF5 file, it has no spin-up, or no L agrees.
+    """
+    try:
+        with h5py.File(path, "r") as file:
+            time = file["main/time"][()]
+            # the forcing datasets: the 1-D datasets of main/ with one value for each step, except the time
+            forcing = {
+                name: dataset[()]
+                for name, dataset in file["main"].items()
+                if name != "time" and isinstance(dataset, h5py.Dataset) and dataset.shape == time.shape
+            }
+    except (OSError, KeyError):
+        return None
+    if time.ndim != 1 or not forcing:
+        return None
+    start = int(np.searchsorted(time, start_year, side="left"))  # the first time that is not before start_year
+    spin_steps, main_steps = start, len(time) - start
+    if spin_steps == 0 or main_steps == 0:
+        return None
+
+    years = np.floor(time[start:]).astype(int)
+    # a block ends at the end of a year of the main run: the lengths L with a new year at step L, or the whole main run
+    year_ends = list(np.flatnonzero(np.diff(years)) + 1) + [main_steps]
+    candidates = [int(n) for n in year_ends if spin_steps % n == 0]
+
+    def same(values, n):
+        blocks = values[:spin_steps].reshape(-1, n)
+        first = values[start : start + n]
+        return all(np.array_equal(block, first, equal_nan=values.dtype.kind == "f") for block in blocks)
+
+    # a quick check of one dataset before all of them: T2m changes at each step
+    quick = forcing.get("T2m", next(iter(forcing.values())))
+    for n in candidates:
+        if same(quick, n) and all(same(values, n) for values in forcing.values()):
+            return {
+                "spin_end_year": int(years[n - 1]),
+                "spin_start": float(time[0]),
+                "block_steps": n,
+                "blocks": spin_steps // n,
+            }
+    return None
 
 
 def migrated_hash_inputs(plan: RunPlan) -> dict:

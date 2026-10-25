@@ -1,12 +1,15 @@
 """Tests for scripts/migrate_runs.py (FEAT-001 step 6). Run from the repo root.
 
-The old folders are small files in tmp_path. The RCM grid is a stub, so no luna data is read.
+The old folders are small files in tmp_path. The RCM grid is a stub, so no luna data is read. CFMforcing.hdf5 is not
+an HDF5 file, except in the tests of the spin-up (FEAT-004), which write a small one with h5py.
 """
 
 import importlib.util
 import os
 from pathlib import Path
 
+import h5py
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -23,6 +26,26 @@ migrate = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(migrate)
 
 NAME = "CFMoutput_-66.403_-63.376_1979_2024_GSFC2020_bucket_RACMO"
+
+
+def write_forcing(path: Path, blocks: int = 3, block_years: int = 2, cut: int = 0, start_year: int = 1979) -> None:
+    """A small CFMforcing.hdf5 as makeSpinFiles makes it: 4 steps a year, a main run of 6 years from start_year, and
+    before it a spin-up of the first block_years of the main run, repeated blocks times, less its first cut steps."""
+    steps, main_years = 4, 6
+    rng = np.random.default_rng(0)
+    main = {
+        "ALBEDO": np.full(main_years * steps, 0.8),  # the same in each year: only the other datasets give the block
+        "T2m": rng.normal(250, 5, main_years * steps),
+        "BDOT": rng.random(main_years * steps).astype(np.float32),
+    }
+    spin_years = blocks * block_years
+    time = (start_year - spin_years) + np.arange((spin_years + main_years) * steps) / steps
+    with h5py.File(path, "w") as file:
+        file["main/time"] = time[cut:]
+        for name, values in main.items():
+            file[f"main/{name}"] = np.concatenate([np.tile(values[: block_years * steps], blocks), values])[cut:]
+        file["main/forcing_data_start"] = 0
+        file["SEB/T2m"] = main["T2m"]
 
 
 def make_source(
@@ -148,3 +171,39 @@ def test_folder_without_results_is_skipped(data_path):
     os.remove(source / NAME / "CFMresults.hdf5")
     (plan,) = migrate.build_plans([("x", str(source))])
     assert plan.action == "SKIP"
+
+
+def test_measure_spin(tmp_path):
+    path = tmp_path / "CFMforcing.hdf5"
+    write_forcing(path, blocks=3, block_years=2)
+    # ALBEDO repeats each year, but T2m and BDOT repeat each 2 years: the block is 8 steps, to the end of 1980
+    assert migrate.measure_spin(str(path), 1979) == {
+        "spin_end_year": 1980, "spin_start": 1973.0, "block_steps": 8, "blocks": 3
+    }
+    write_forcing(path, blocks=2, block_years=3)
+    assert migrate.measure_spin(str(path), 1979) == {
+        "spin_end_year": 1981, "spin_start": 1973.0, "block_steps": 12, "blocks": 2
+    }
+
+
+def test_measure_spin_of_part_of_a_block_is_none(tmp_path):
+    path = tmp_path / "CFMforcing.hdf5"
+    write_forcing(path, blocks=3, block_years=2, cut=2)
+    assert migrate.measure_spin(str(path), 1979) is None
+
+
+def test_measure_spin_with_no_spin_up_is_none(tmp_path):
+    path = tmp_path / "CFMforcing.hdf5"
+    write_forcing(path)
+    assert migrate.measure_spin(str(path), 1973) is None
+
+
+def test_measure_spin_of_a_file_that_is_not_hdf5_is_none(tmp_path):
+    path = tmp_path / "CFMforcing.hdf5"
+    path.write_bytes(b"forcing")
+    assert migrate.measure_spin(str(path), 1979) is None
+    assert migrate.measure_spin(str(tmp_path / "missing.hdf5"), 1979) is None
+    with h5py.File(path, "w") as file:
+        file["other/time"] = np.arange(4.0)  # no main/time
+    assert migrate.measure_spin(str(path), 1979) is None
+
