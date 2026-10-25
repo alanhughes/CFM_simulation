@@ -7,11 +7,14 @@ config.yaml file if no command line arguments are provided.
 Usage:
     python plot_cfm.py --site CI-0 --physrhols GSFC2020 Crocus --rcm RACMO --liquid bucket [--cfm <label>]
     python plot_cfm.py ... --start-year 1979 --end-year 2020
+    python plot_cfm.py --site WI-70 ... --rcm MAR --cfm 3e3bf7e-speersm --spin-end-year 1995
 
 The runs are found from their manifests (sim.runs.find_run), with the CFM version from --cfm (default_cfm_version if
 not given). The years are those of scripts/run_cfm.py (force.years.run_years, DISC-001): start_year and end_year of
 config.yaml, with the end year clipped to the last complete year of the RCM data (RACMO: 1979-2023), or
---start-year/--end-year as given.
+--start-year/--end-year as given. The runs have the spin_end_year of config.yaml, or --spin-end-year as given (a year,
+or any for the runs of any spin_end_year, FEAT-004). The MAR runs of CI-0, CI-22, CI-120, WI-0 and WI-70 of
+3e3bf7e-speersm have spin_end_year 1995 (MIG-001).
 """
 
 import argparse
@@ -20,6 +23,7 @@ import logging
 from cfm_config import config, get_site
 from force.years import add_year_arguments
 from plot.results import ResultsPlotter
+from sim.runs import add_spin_end_year_argument
 
 logging.basicConfig(level=logging.INFO)
 
@@ -53,6 +57,7 @@ if __name__ == "__main__":
         "--cfm", type=str, help="CFM version (a label in cfm_versions); default_cfm_version if not given"
     )
     add_year_arguments(parser)
+    add_spin_end_year_argument(parser)
 
     args = parser.parse_args()
     if args.site is not None and args.physrhols is not None and args.rcm is not None and args.liquid is not None:
@@ -71,5 +76,12 @@ if __name__ == "__main__":
         logging.info("Using borehole location and physrho from config.yaml")
 
     ResultsPlotter(
-        site.name, phys_rho, rcm_name, liquid, cfm=args.cfm, start_year=args.start_year, end_year=args.end_year
+        site.name,
+        phys_rho,
+        rcm_name,
+        liquid,
+        cfm=args.cfm,
+        start_year=args.start_year,
+        end_year=args.end_year,
+        spin_end_year=args.spin_end_year,
     ).plot()

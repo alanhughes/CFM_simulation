@@ -9,7 +9,7 @@ import xarray as xr
 from cfm_config import cfm_version, config, sites
 from force.model_point import model_point_label, shared_model_points
 from force.years import run_years
-from sim.runs import find_run
+from sim.runs import find_run, spin_end_year_filter
 
 logging.basicConfig(level=logging.INFO)
 
@@ -24,6 +24,7 @@ class ResultsPlotter:
         cfm: str | None = None,
         start_year: int | None = None,
         end_year: int | None = None,
+        spin_end_year: int | str | None = None,
     ) -> None:
         """Initialize the ResultsPlotter with a site and physical densification schemes.
         Args:
@@ -34,6 +35,8 @@ class ResultsPlotter:
             cfm (str | None): Label of the CFM version (default_cfm_version if None)
             start_year, end_year (int | None): the years of the runs, used as they are. None: the years of
                 force.years.run_years for rcm_name, as scripts/run_cfm.py uses (DISC-001)
+            spin_end_year (int | str | None): spin_end_year of the runs; None: spin_end_year of config.yaml; "any": the
+                runs of any spin_end_year (FEAT-004)
         """
 
         self.site: str = site
@@ -44,6 +47,7 @@ class ResultsPlotter:
         years = run_years(rcm_name, start_year, end_year)
         self.start_year: int = years.start_year
         self.end_year: int = years.end_year
+        self.spin_end_year: int | None = spin_end_year_filter(spin_end_year)
 
         phys_rho_str = "_".join(self.phys_rho)
         # the CFMresults.hdf5 of each scheme, found from the run manifests
@@ -55,6 +59,7 @@ class ResultsPlotter:
                 liquid=liquid,
                 start_year=self.start_year,
                 end_year=self.end_year,
+                spin_end_year=self.spin_end_year,
                 cfm=self.cfm,
             ).results_file
             for scheme in self.phys_rho

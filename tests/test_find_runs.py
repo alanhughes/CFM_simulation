@@ -252,3 +252,8 @@ def test_spin_end_year(runs, caplog):
         find_run(spin_end_year=2000, **old)
     table = runs_table(find_runs(**old))
     assert sorted(table["spin_end_year"].fillna(0)) == [0, 1989, 1995]
+
+
+def test_no_run_gives_the_spin_end_year(runs):
+    with pytest.raises(LookupError, match="Only the runs with spin_end_year 1995 agree"):
+        find_run(physRho="Crocus", spin_end_year=1995)

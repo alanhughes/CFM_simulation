@@ -9,10 +9,11 @@ not given).
 
 The years are those of scripts/run_cfm.py (force.years.run_years, DISC-001): start_year and end_year of config.yaml,
 with the end year clipped to the last complete year of the RCM data (RACMO: 1979-2023), or --start-year/--end-year as
-given.
+given. The runs have the spin_end_year of config.yaml, or --spin-end-year as given (a year, or any for the runs of any
+spin_end_year, FEAT-004).
 
 Usage:
-    - python calc_dh.py [--cfm <label>] [--start-year <year>] [--end-year <year>]
+    - python calc_dh.py [--cfm <label>] [--start-year <year>] [--end-year <year>] [--spin-end-year <year>|any]
 
 """
 
@@ -26,7 +27,7 @@ from cfm_config import cfm_version, config, sites
 from force.cache import forcing_csv_path
 from force.model_point import model_point, model_point_label, shared_model_points
 from force.years import add_year_arguments, run_years
-from sim.runs import find_run
+from sim.runs import add_spin_end_year_argument, find_run, spin_end_year_filter
 
 
 def read_output_data(file_path):
@@ -61,8 +62,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Calculate and plot dh/dt for the sites in sites.yaml")
     parser.add_argument("--cfm", help="CFM version (a label in cfm_versions); default_cfm_version if not given")
     add_year_arguments(parser)
+    add_spin_end_year_argument(parser)
     args = parser.parse_args()
     cfm = cfm_version(args.cfm)["label"]
+    spin_end_year = spin_end_year_filter(args.spin_end_year)
 
     borehole_sites = sites()
     phys_rho_options = ("GSFC2020", "HLdynamic", "Crocus", "Barnola1991", "Ligtenberg2011")
@@ -85,7 +88,14 @@ if __name__ == "__main__":
         plt.figure(figsize=(10, 6))
         for phys_rho in phys_rho_options:
             output_path = find_run(
-                site=site, rcm_name=rcm_name, physRho=phys_rho, liquid=liquid, start_year=start, end_year=end, cfm=cfm
+                site=site,
+                rcm_name=rcm_name,
+                physRho=phys_rho,
+                liquid=liquid,
+                start_year=start,
+                end_year=end,
+                spin_end_year=spin_end_year,
+                cfm=cfm,
             ).results_file
             results_dict = read_output_data(output_path)
 
