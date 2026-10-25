@@ -44,13 +44,14 @@ def make_run(
         "run_hash": hash_,
         "run": {
             "sites": list(sites),
-            **run_keys,
             "model_point": {"tag": tag},
             "rcm_name": rcm,
             "physRho": physRho,
             "liquid": "bucket",
             "start_year": 1979,
             "end_year": 2024,
+            "spin_end_year": 1989,
+            **run_keys,
         },
         "cfm": {"label": cfm, "commit": "c"},
         "finished": finished,
@@ -233,3 +234,21 @@ def test_only_the_runs_found_are_checked(runs, caplog):
     make_run("MAR_5_5", hash_="2" * 64, site_coords={"CI-0": [-66.5, -63.376]})
     find_runs(rcm_name="RACMO")
     assert site_warnings(caplog) == []
+
+
+def test_spin_end_year(runs, caplog):
+    spin_1995 = make_run("RACMO_261_126", cfm="3e3bf7e-speersm", hash_="1" * 64, spin_end_year=1995)
+    migrated_1 = make_run("RACMO_261_126", cfm="3e3bf7e-speersm", hash_="2" * 64, spin_end_year=None)
+    old = dict(model_point="RACMO_261_126", physRho="GSFC2020", cfm="3e3bf7e-speersm")
+    assert folders(find_runs(spin_end_year=1995, **old)) == [spin_1995]
+    assert folders(find_runs(spin_end_year=1989, **old)) == [runs["old_cfm"]]
+    assert folders(find_runs(**old)) == sorted([runs["old_cfm"], spin_1995, migrated_1])
+    assert find_run(spin_end_year=1995, **old).spin_end_year == 1995
+    # the warning of find_run gives the spin_end_year of each run
+    find_run(**old)
+    assert "spin_end_year 1995" in caplog.text and "spin_end_year 1989" in caplog.text
+    assert "spin_end_year None" in caplog.text
+    with pytest.raises(LookupError, match="spin_end_year=2000"):
+        find_run(spin_end_year=2000, **old)
+    table = runs_table(find_runs(**old))
+    assert sorted(table["spin_end_year"].fillna(0)) == [0, 1989, 1995]

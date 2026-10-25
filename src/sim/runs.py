@@ -71,6 +71,11 @@ class Run:
         return self.manifest["run"]["end_year"]
 
     @property
+    def spin_end_year(self) -> Optional[int]:
+        """The last year of the spin-up block. A migrated manifest from before FEAT-004 (migrated-1) does not have it."""
+        return self.manifest["run"].get("spin_end_year")
+
+    @property
     def cfm(self) -> str:
         """The label of the CFM version."""
         return self.manifest["cfm"]["label"]
@@ -112,6 +117,7 @@ class Run:
             "liquid": self.liquid,
             "start_year": self.start_year,
             "end_year": self.end_year,
+            "spin_end_year": self.spin_end_year,
             "cfm": self.cfm,
             "cfm_commit": self.cfm_commit,
             "run_hash": self.run_hash,
@@ -137,6 +143,7 @@ def find_runs(
     liquid: Optional[str] = None,
     start_year: Optional[int] = None,
     end_year: Optional[int] = None,
+    spin_end_year: Optional[int] = None,
     cfm: Optional[str] = None,
     run_hash: Optional[str] = None,
     status: Optional[str] = COMPLETE,
@@ -145,8 +152,10 @@ def find_runs(
     """The runs that agree with all the filters that are not None, sorted by folder.
 
     site is a name in sites.yaml: the runs of its model point. With site and no rcm_name, the model point of the site is
-    found for each RCM that has runs. model_point is a ModelPoint.tag. cfm is a label in cfm_versions. run_hash can be
-    the first characters of the hash. status is "complete" by default; None gives all the runs.
+    found for each RCM that has runs. model_point is a ModelPoint.tag. spin_end_year is run.spin_end_year of the
+    manifest: a run with no spin_end_year (a migrated-1 run, FEAT-004) never agrees with it. cfm is a label in
+    cfm_versions. run_hash can be the first characters of the hash. status is "complete" by default; None gives all the
+    runs.
     """
     root = root or runs_root()
     if model_point is not None:
@@ -176,7 +185,14 @@ def find_runs(
                 site_tags[run.rcm_name] = _site_model_point(site, run.rcm_name)
             if run.model_point != site_tags[run.rcm_name]:
                 continue
-        wanted = {"physRho": physRho, "liquid": liquid, "start_year": start_year, "end_year": end_year, "cfm": cfm}
+        wanted = {
+            "physRho": physRho,
+            "liquid": liquid,
+            "start_year": start_year,
+            "end_year": end_year,
+            "spin_end_year": spin_end_year,
+            "cfm": cfm,
+        }
         if any(value is not None and getattr(run, key) != value for key, value in wanted.items()):
             continue
         if run_hash is not None and not run.run_hash.startswith(run_hash):
@@ -235,10 +251,13 @@ def find_run(**filters) -> Run:
         raise LookupError(f"No run with {given} in {filters.get('root') or runs_root()}. Run scripts/run_cfm.py first.")
     runs.sort(key=lambda run: run.finished)
     if len(runs) > 1:
-        others = ", ".join(f"{run.run_hash[:8]} ({run.cfm}, finished {run.finished})" for run in runs[:-1])
+        def describe(run):
+            return f"{run.run_hash[:8]} ({run.cfm}, spin_end_year {run.spin_end_year}, finished {run.finished})"
+
+        others = ", ".join(describe(run) for run in runs[:-1])
         logging.warning(
-            f"{len(runs)} runs with {given}. Using {runs[-1].run_hash[:8]} ({runs[-1].cfm}, finished "
-            f"{runs[-1].finished}), the last to finish. The others: {others}. Give run_hash to choose one."
+            f"{len(runs)} runs with {given}. Using {describe(runs[-1])}, the last to finish. The others: {others}. "
+            "Give run_hash or spin_end_year to choose one."
         )
     return runs[-1]
 
@@ -250,6 +269,7 @@ ROW_KEYS = (
     "liquid",
     "start_year",
     "end_year",
+    "spin_end_year",
     "cfm",
     "cfm_commit",
     "run_hash",

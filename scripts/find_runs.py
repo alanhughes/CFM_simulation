@@ -3,6 +3,7 @@
 Usage:
     python scripts/find_runs.py                                   # all the complete runs
     python scripts/find_runs.py --site CI-0 --physrho GSFC2020 --cfm ab871c8
+    python scripts/find_runs.py --cfm 3e3bf7e-speersm --spin-end-year 1995   # the runs of one spin-up (FEAT-004)
     python scripts/find_runs.py --status all                      # also the running and failed runs
     python scripts/find_runs.py --index                           # also write {CFM_data_path}/index.csv
     python scripts/find_runs.py --index runs.parquet              # the same table as parquet (needs pyarrow)
@@ -28,6 +29,7 @@ if __name__ == "__main__":
     parser.add_argument("--liquid")
     parser.add_argument("--start-year", type=int)
     parser.add_argument("--end-year", type=int)
+    parser.add_argument("--spin-end-year", type=int, help="run.spin_end_year in the manifest (no filter if not given)")
     parser.add_argument("--cfm", help="Label of the CFM version")
     parser.add_argument("--hash", help="Run hash, or its first characters")
     parser.add_argument("--status", default="complete", help="complete (default), running, failed or all")
@@ -47,6 +49,7 @@ if __name__ == "__main__":
         liquid=args.liquid,
         start_year=args.start_year,
         end_year=args.end_year,
+        spin_end_year=args.spin_end_year,
         cfm=args.cfm,
         run_hash=args.hash,
         status=None if args.status == "all" else args.status,
