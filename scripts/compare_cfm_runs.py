@@ -10,19 +10,23 @@ Only reads the two folders, never writes. Does not need config.yaml.
 
 Matrix mode (FEAT-001): --baseline <label> --cfm <label> [<label> ...] finds the runs with find_runs (from the
 manifests, so it needs config.yaml) and compares each run of each --cfm version with the baseline run of the same model
-point, schemes and years. It prints one row for each pair: the identical datasets of each file, and the physical
-differences of the summary(). The filters --site, --model-point, --rcm, --physrho, --liquid and --spin-end-year limit
-the runs. If more than one run of a version agrees, it uses the run that finished last (as find_run).
+point, schemes, years and spin_end_year. It prints one row for each pair: the identical datasets of each file, and the
+physical differences of the summary(). The filters --site, --model-point, --rcm, --physrho, --liquid and
+--spin-end-year limit the runs. If more than one run of a version agrees, it uses the run that finished last (as
+find_run).
 
-A different spin_end_year gives different initial conditions, so the difference of such a pair contains the effect of
-the spin-up and of the CFM version together (FEAT-004). Each row gives spin_end_year and baseline_spin_end_year, and
-the note "spin-up differs" if they are different. The key of a pair (PAIR_KEY) does not contain spin_end_year, so such
-a pair is still compared. Give --spin-end-year to compare the runs of one spin-up only.
+A different spin_end_year gives different initial conditions, so the difference of such a pair would contain the effect
+of the spin-up and of the CFM version together (FEAT-004). Thus the key of a pair is PAIR_KEY and spin_end_year, and
+each row shows the effect of the CFM version only. A run with no run of the same spin_end_year in the other version
+gives a row with the note "no run of <label> with spin_end_year <year>". Each row gives spin_end_year and
+baseline_spin_end_year. With --allow-spin-mismatch the key is PAIR_KEY only, so two runs with different spin-ups are
+compared, and such a row has the note "spin-up differs". Give --spin-end-year to compare the runs of one spin-up only.
 
 Usage:
     - python scripts/compare_cfm_runs.py <new_output_folder> <reference_output_folder>
     - python scripts/compare_cfm_runs.py --baseline 3e3bf7e-speersm --cfm ab871c8 [--site CI-0] [--rcm RACMO] [--csv out.csv]
     - python scripts/compare_cfm_runs.py --baseline 3e3bf7e-speersm --cfm ab871c8 --spin-end-year 1989
+    - python scripts/compare_cfm_runs.py --baseline 3e3bf7e-speersm --cfm ab871c8 --allow-spin-mismatch
 """
 
 import argparse
@@ -35,7 +39,7 @@ import numpy as np
 CFM_FILES = ["CFMforcing.hdf5", "CFMspin.hdf5", "CFMresults.hdf5"]
 COMPARE_DEPTHS = [1, 5, 10, 20, 40]  # m
 COMPARE_DENSITIES = [550, 830]  # kg/m3
-# the Run properties that make a pair of the matrix mode. spin_end_year is not in the key: the row shows it (FEAT-004)
+# the Run properties that make a pair of the matrix mode, with spin_end_year unless --allow-spin-mismatch (FEAT-004)
 PAIR_KEY = ("model_point", "physRho", "liquid", "start_year", "end_year")
 
 
@@ -119,12 +123,15 @@ def summary(new_dir: str, ref_dir: str) -> dict:
     return row
 
 
-def matrix(baseline: str, versions: list, filters: dict) -> list:
-    """Compare the runs of each version with the baseline runs of the same model point, schemes and years."""
+def matrix(baseline: str, versions: list, filters: dict, allow_spin_mismatch: bool = False) -> list:
+    """Compare the runs of each version with the baseline runs of the same model point, schemes, years and
+    spin_end_year. With allow_spin_mismatch, a pair can have two different spin_end_year values."""
     from sim.runs import find_runs
 
+    key_names = PAIR_KEY if allow_spin_mismatch else PAIR_KEY + ("spin_end_year",)
+
     def key(run):
-        return tuple(getattr(run, name) for name in PAIR_KEY)
+        return tuple(getattr(run, name) for name in key_names)
 
     def latest(runs):
         by_key = {}
@@ -144,6 +151,8 @@ def matrix(baseline: str, versions: list, filters: dict) -> list:
                 row["baseline_spin_end_year"] = base[k].spin_end_year
             if k not in other or k not in base:
                 row["note"] = f"no run of {version if k not in other else baseline}"
+                if not allow_spin_mismatch:
+                    row["note"] += f" with spin_end_year {(base if k in base else other)[k].spin_end_year}"
             else:
                 row["run"], row["baseline_run"] = other[k].run_hash[:8], base[k].run_hash[:8]
                 row.update(summary(other[k].folder, base[k].folder))
@@ -209,6 +218,12 @@ if __name__ == "__main__":
     parser.add_argument("--physrho")
     parser.add_argument("--liquid")
     parser.add_argument("--spin-end-year", type=int, help="Matrix mode: only the runs of this spin_end_year")
+    parser.add_argument(
+        "--allow-spin-mismatch",
+        action="store_true",
+        help="Matrix mode: also pair two runs with different spin_end_year values (note \"spin-up differs\"). By "
+        "default a pair has one spin_end_year.",
+    )
     parser.add_argument("--csv", help="Matrix mode: also write the table to this CSV file")
     args = parser.parse_args()
 
@@ -225,7 +240,7 @@ if __name__ == "__main__":
             "liquid": args.liquid,
             "spin_end_year": args.spin_end_year,
         }
-        table = pd.DataFrame(matrix(args.baseline, args.cfm, filters))
+        table = pd.DataFrame(matrix(args.baseline, args.cfm, filters, allow_spin_mismatch=args.allow_spin_mismatch))
         with pd.option_context("display.max_rows", None, "display.width", 250, "display.float_format", "{:.3g}".format):
             print(table.to_string(index=False))
         if args.csv:
