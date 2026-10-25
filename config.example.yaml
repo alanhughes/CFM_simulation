@@ -145,7 +145,7 @@ RACMO_to_CFM_unit_factors:
 ### ----------------- CFM Simulation ----------------- ###
 
 ## model run parameters
-spin_end_year: 1989 #spin date end
+spin_end_year: 1989 #spin date end. Also the default --spin-end-year of the plot and analysis scripts (FEAT-004)
 runid: -9999 
 rho_bottom: 910 # density at bottom boundary condition
 sublim_sf: -1 #sublimation scaling factor, -1 for MERRA2 data, not sure for MAR data but think also -1, -1 for RACMO

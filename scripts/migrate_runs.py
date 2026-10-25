@@ -13,11 +13,18 @@ if the plan has a CONFLICT, or if the destination disk does not have the space. 
 and then renames it. A copy that stops leaves a folder with no manifest; sim.run does not use such a folder.
 
 An old folder has no run hash, and the CFM identity, the Python environment and the wrapper code of the old run are not
-known. The script gives it a migrated run hash: the SHA-256 of a document with hash_version "migrated-1" and the items
+known. The script gives it a migrated run hash: the SHA-256 of a document with hash_version "migrated-2" and the items
 that are known, and the sizes of the .hdf5 files (see migrated_hash_inputs). A new run never has the same hash, so
 sim.run never skips a new run because of a migrated run. Two old folders with the same known items and file sizes (for
 example the same run in speersm/ and in ~/CFM_data/, or two sites in one cell) get the same hash: the script copies
 one, and --copy compares the files of the other byte for byte (DUPLICATE). It stops if they are different.
+
+The old folders do not record spin_end_year, and the speersm/ runs used two values (1995 and 1989, MIG-001). The script
+measures it from the repeated blocks of the spin-up in CFMforcing.hdf5 (measure_spin, FEAT-004). The migrated hash
+contains it, the manifest records it in run.spin_end_year (the key of a new run) and the other measured values in
+migrated.spin. If it cannot be measured, the value is None and the plan has the note "the spin-up is not measured".
+The dry run shows spin_end_year for each folder, and the summary gives the COPY folders of each label by spin_end_year.
+The migrated-1 hash (FEAT-001) had no spin_end_year, so a migrated-2 hash never agrees with a migrated-1 hash.
 
 The manifest records the site of each old folder (the site in sites.yaml with the same coordinates to 3 decimals) and,
 in run.site_coords, the coordinates of the old folder name, not those of sites.yaml. Each site of a DUPLICATE group
@@ -51,6 +58,8 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import List, Optional
 
+import h5py
+import numpy as np
 import pandas as pd
 
 from cfm_config import config, format_coord, sites
@@ -82,7 +91,7 @@ OLD_FOLDER = re.compile(
 )
 OLD_CSV = re.compile(r"^(?P<rcm>MAR|RACMO|RACMO23)_(?P<lat>-?[\d.]+)_(?P<lon>-?[\d.]+)_(?P<start>\d{4})_(?P<end>\d{4})\.csv$")
 
-MIGRATED_HASH_VERSION = "migrated-1"
+MIGRATED_HASH_VERSION = "migrated-2"
 
 # cfm_config keys that do not describe the run: the paths
 _UNHASHED_CFM_CONFIG_KEYS = ("resultsFolder",)
@@ -105,6 +114,7 @@ class RunPlan:
     forcing_csv: Optional[str] = None
     forcing_sha256: Optional[str] = None
     model_point: Optional[ModelPoint] = None
+    spin: Optional[dict] = None  # measure_spin() of CFMforcing.hdf5, None if it is not measured
     files: List[str] = field(default_factory=list)
     size: int = 0
     finished: str = ""
@@ -115,6 +125,10 @@ class RunPlan:
     notes: List[str] = field(default_factory=list)
     sites: List[str] = field(default_factory=list)
     site_coords: dict = field(default_factory=dict)  # {site: [lat, lon]}, the coordinates of the old folder name
+
+    @property
+    def spin_end_year(self) -> Optional[int]:
+        return self.spin["spin_end_year"] if self.spin is not None else None
 
 
 def cell_model_point(rcm: str, i: int, j: int, lat: float, lon: float) -> ModelPoint:
@@ -142,6 +156,60 @@ def find_forcing_csv(cfm_output: str, rcm: str, lat: float, lon: float, start: i
     return candidates[0] if len(candidates) == 1 else None
 
 
+def measure_spin(path: str, start_year: int) -> Optional[dict]:
+    """The spin-up of an old run, measured from its CFMforcing.hdf5 (FEAT-004).
+
+    The CFM (makeSpinFiles) puts the forcing from spin_date_st to spin_date_end, repeated a whole number of times,
+    before the forcing of the main run. The spin-up is the steps of main/time before the first time that is not before
+    start_year. The block length L is the smallest length such that the number of spin-up steps is a multiple of L and
+    each forcing dataset of main/, in each block of L spin-up steps, is identical to the first L steps of the main run.
+    spin_end_year is the year of the main run at step L - 1. Do not use the length of the spin-up: the CFM finds the
+    number of blocks from the firn depth and the accumulation, so it changes from site to site.
+
+    Returns {"spin_end_year", "spin_start" (the first time of the spin-up), "block_steps" (L), "blocks"}, or None if
+    the file is not a readable HDF5 file, it has no spin-up, or no L agrees.
+    """
+    try:
+        with h5py.File(path, "r") as file:
+            time = file["main/time"][()]
+            # the forcing datasets: the 1-D datasets of main/ with one value for each step, except the time
+            forcing = {
+                name: dataset[()]
+                for name, dataset in file["main"].items()
+                if name != "time" and isinstance(dataset, h5py.Dataset) and dataset.shape == time.shape
+            }
+    except (OSError, KeyError):
+        return None
+    if time.ndim != 1 or not forcing:
+        return None
+    start = int(np.searchsorted(time, start_year, side="left"))  # the first time that is not before start_year
+    spin_steps, main_steps = start, len(time) - start
+    if spin_steps == 0 or main_steps == 0:
+        return None
+
+    years = np.floor(time[start:]).astype(int)
+    # a block ends at the end of a year of the main run: the lengths L with a new year at step L, or the whole main run
+    year_ends = list(np.flatnonzero(np.diff(years)) + 1) + [main_steps]
+    candidates = [int(n) for n in year_ends if spin_steps % n == 0]
+
+    def same(values, n):
+        blocks = values[:spin_steps].reshape(-1, n)
+        first = values[start : start + n]
+        return all(np.array_equal(block, first, equal_nan=values.dtype.kind == "f") for block in blocks)
+
+    # a quick check of one dataset before all of them: T2m changes at each step
+    quick = forcing.get("T2m", next(iter(forcing.values())))
+    for n in candidates:
+        if same(quick, n) and all(same(values, n) for values in forcing.values()):
+            return {
+                "spin_end_year": int(years[n - 1]),
+                "spin_start": float(time[0]),
+                "block_steps": n,
+                "blocks": spin_steps // n,
+            }
+    return None
+
+
 def migrated_hash_inputs(plan: RunPlan) -> dict:
     """The document of the migrated run hash: the items of an old run that are known. See the module docstring."""
     cfm_config = None
@@ -154,6 +222,7 @@ def migrated_hash_inputs(plan: RunPlan) -> dict:
         "liquid": plan.liquid,
         "start_year": plan.start,
         "end_year": plan.end,
+        "spin_end_year": plan.spin_end_year,
         "model_point": {"tag": plan.model_point.tag, "release": plan.model_point.release},
         "forcing_csv_sha256": plan.forcing_sha256,
         "cfm_label": plan.label,
@@ -216,6 +285,10 @@ def plan_folder(path: str, label: str, site_by_coords: dict) -> Optional[RunPlan
             plan.notes.append(f"the forcing stops at {df.index.max().date()}: end year {end}, not {plan.end} (BUG-003)")
             plan.end = end
 
+    plan.spin = measure_spin(os.path.join(path, "CFMforcing.hdf5"), plan.start)
+    if plan.spin is None:
+        plan.notes.append("the spin-up is not measured: CFMforcing.hdf5 has no spin-up of whole blocks, or cannot be read")
+
     plan.hash_inputs = migrated_hash_inputs(plan)
     plan.run_hash = run_hash(plan.hash_inputs)
     plan.target = run_folder(plan.model_point.tag, plan.physRho, plan.liquid, plan.start, plan.end, label, plan.run_hash)
@@ -268,6 +341,8 @@ def build_plans(sources: List[tuple], match: Optional[List[str]] = None) -> List
 
 def migrated_manifest(plan: RunPlan) -> dict:
     mp = plan.model_point
+    # the wrapper parameters that the old folder gives: the years of its name, and spin_end_year if it is measured
+    known = ("start_year", "end_year") + (("spin_end_year",) if plan.spin is not None else ())
     return {
         "status": COMPLETE,
         "run_hash": plan.run_hash,
@@ -278,8 +353,15 @@ def migrated_manifest(plan: RunPlan) -> dict:
             "source_forcing_csv": plan.forcing_csv,
             "notes": plan.notes,
             "unknown": ["cfm identity (commit, patch, environment)", "wrapper code"]
-            + [key for key in WRAPPER_PARAMS if key not in ("start_year", "end_year")]
+            + [key for key in WRAPPER_PARAMS if key not in known]
             + ([] if plan.cfm_config is not None else ["cfm_config"]),
+            # the values of measure_spin() other than spin_end_year, which is in run.spin_end_year
+            "spin": None
+            if plan.spin is None
+            else {
+                **{key: value for key, value in plan.spin.items() if key != "spin_end_year"},
+                "method": "measured from CFMforcing.hdf5",
+            },
             "date": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
             "host": socket.gethostname(),
             "script": "scripts/migrate_runs.py",
@@ -306,6 +388,7 @@ def migrated_manifest(plan: RunPlan) -> dict:
             "rcm_name": plan.rcm,
             "start_year": plan.start,
             "end_year": plan.end,
+            "spin_end_year": plan.spin_end_year,
             "forcing_csv": plan.forcing_csv,
         },
         "cfm": {"label": plan.label},
@@ -393,6 +476,11 @@ def main(argv: List[str]) -> int:
         if plan.model_point is not None:
             mp = plan.model_point
             print(f"          site {plan.site}, {mp.tag} ({mp.distance_km:.1f} km), {plan.size / 1e9:.2f} GB, finished {plan.finished}")
+            spin = plan.spin
+            if spin is not None:
+                print(f"          spin_end_year {spin['spin_end_year']} ({spin['blocks']} blocks of {spin['block_steps']} steps from {spin['spin_start']:g})")
+            else:
+                print("          spin_end_year None")
         if plan.target:
             print(f"          -> {plan.target}")
         for note in plan.notes:
@@ -402,6 +490,14 @@ def main(argv: List[str]) -> int:
         counts[plan.action] += 1
     size = sum(plan.size for plan in plans if plan.action == "COPY")
     print("\nSummary: " + ", ".join(f"{action} {n}" for action, n in sorted(counts.items())) + f"; {size / 1e9:.1f} GB to copy")
+    by_spin = defaultdict(lambda: defaultdict(int))  # {label: {spin_end_year: COPY folders}}
+    for plan in plans:
+        if plan.action == "COPY":
+            by_spin[plan.label][plan.spin_end_year] += 1
+    for label, counts_of_label in sorted(by_spin.items()):
+        print(f"COPY of {label} by spin_end_year: " + ", ".join(
+            f"{year} {n}" for year, n in sorted(counts_of_label.items(), key=lambda item: (item[0] is None, item[0] or 0))
+        ))
     return copy_all(plans) if args.copy else 0
 
 
