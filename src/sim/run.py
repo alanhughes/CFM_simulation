@@ -58,7 +58,7 @@ def import_cfm(repo: str) -> tuple:
 
 
 def warn_run_code_drift(wrapper: dict) -> None:
-    """Warn, one time in each process, if the run code differs from that of the complete runs of its version.
+    """Warn, one time in each process, if the run code differs from that of the last complete run of its version.
 
     The run hash has RUN_CODE_VERSION, not the run code (FEAT-005), so a change to the run code without a new version
     reuses the runs of the old code. The warning does not stop the run: only the user can say if the change can
@@ -67,14 +67,13 @@ def warn_run_code_drift(wrapper: dict) -> None:
     global _run_code_drift_warned
     if _run_code_drift_warned:
         return
-    drifted = run_code_drift(wrapper)
-    if not drifted:
+    last = run_code_drift(wrapper)
+    if last is None:
         return
-    last = max(drifted, key=lambda other: other["finished"])
     logging.warning(
-        f"The run code changed since the runs of run code version {wrapper['run_code_version']} "
-        f"(commit {last.get('commit')}). Increase RUN_CODE_VERSION in src/sim/identity.py if the change can change "
-        "the results."
+        f"The run code changed since the last run of run code version {wrapper['run_code_version']} "
+        f"(commit {last.get('commit')}, finished {last.get('finished')}). Increase RUN_CODE_VERSION in "
+        "src/sim/identity.py if the change can change the results."
     )
     _run_code_drift_warned = True
 

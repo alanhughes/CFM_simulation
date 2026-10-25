@@ -12,8 +12,8 @@ one it:
    other items stay the same, so the new hash is the hash that sim.run gives for the same run now.
 3. Renames the folder <hash8> to the new <hash8>, in the same parent folder (os.rename). It refuses if that exists.
 4. Writes the manifest again (atomic): the new run_hash and hash_inputs, wrapper.run_code_version,
-   wrapper.run_code_sha256 of the commit under the rule of now (RUN_CODE_EXCLUDED; the old value would give each new
-   run the drift warning), cfm_config.resultsFolder with the new folder, and "rekeyed" with the old values.
+   wrapper.run_code_sha256 of the commit under the rule of now (RUN_CODE_EXCLUDED; the old value would give a false
+   drift warning), cfm_config.resultsFolder with the new folder, and "rekeyed" with the old values.
 
 The rename comes first and the manifest last. If the script stops between the two, the folder has the new name and
 the manifest of hash_version 2. A second run of the script selects it again (FINISH) and writes the manifest only. After

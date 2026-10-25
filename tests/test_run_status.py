@@ -343,7 +343,7 @@ def test_wrong_python_is_refused(data_path, cfm_calls):
     assert not os.path.exists(data_path / "runs")
 
 
-DRIFT = "The run code changed since the runs of run code version 1 (commit w)."
+DRIFT = "The run code changed since the last run of run code version 1 (commit w, finished"
 
 
 def drift_warnings(caplog) -> int:
@@ -375,7 +375,8 @@ def test_same_run_code_does_not_warn(data_path, cfm_calls, identities, caplog):
 
 def test_other_runs_do_not_warn(data_path, cfm_calls, identities, caplog):
     """Only a complete new run of the same version counts: not another version, a failed or migrated run, a manifest
-    from before FEAT-005 (hash_version 2, no wrapper.run_code_version) or a manifest that cannot be read."""
+    from before FEAT-005 (hash_version 2, no wrapper.run_code_version) or a manifest that cannot be read. They all
+    finished after the run of now, so each one would be the last run if it counted."""
     new_run().run()
     other = {**identities["wrapper"], "run_code_sha256": "other"}
     before_feat_005 = {key: value for key, value in other.items() if key != "run_code_version"}
@@ -389,10 +390,47 @@ def test_other_runs_do_not_warn(data_path, cfm_calls, identities, caplog):
     for name, manifest in manifests.items():
         path = data_path / "runs" / "RACMO_1_1" / "GSFC2020_bucket_1979-2024" / "test" / name
         os.makedirs(path)
-        write_manifest(str(path), {"run_hash": name, **manifest})
+        write_manifest(str(path), {"run_hash": name, "finished": "2100-01-01T00:00:00+00:00", **manifest})
     broken = data_path / "runs" / "RACMO_1_1" / "GSFC2020_bucket_1979-2024" / "test" / "broken"
     os.makedirs(broken)
     (broken / "manifest.json").write_text("{")
     new_run(force=True).run()
     assert drift_warnings(caplog) == 0
     assert len(cfm_calls) == 2
+
+
+def write_run(data_path, name: str, finished: str, wrapper: dict) -> None:
+    """A complete new run of another model point, with its finished time and wrapper."""
+    path = data_path / "runs" / "RACMO_1_1" / "GSFC2020_bucket_1979-2024" / "test" / name
+    os.makedirs(path)
+    write_manifest(str(path), {"run_hash": name, "status": COMPLETE, "finished": finished, "wrapper": wrapper})
+
+
+def test_only_the_last_run_counts(data_path, cfm_calls, identities, caplog):
+    """FEAT-005 open question 3: the drift check compares with the complete run of the version that finished last."""
+    wrapper = identities["wrapper"]
+    write_run(data_path, "older", "2026-10-01T10:00:00+00:00", {**wrapper, "commit": "w0", "run_code_sha256": "old"})
+    write_run(data_path, "last", "2026-10-02T10:00:00+00:00", dict(wrapper))
+    folder()
+    assert "The run code changed" not in caplog.text  # an older run differs, but the last run is the same
+
+    write_run(data_path, "later", "2026-10-03T08:00:00+02:00", {**wrapper, "commit": "w9", "run_code_sha256": "new"})
+    folder()
+    assert "since the last run of run code version 1 (commit w9, finished 2026-10-03T08:00:00+02:00)" in caplog.text
+
+
+def test_a_complete_run_of_the_new_code_ends_the_warning(data_path, cfm_calls, identities, caplog, monkeypatch):
+    new_run().run()
+    identities["wrapper"].update(commit="w2", run_code_sha256="code2")
+    config["cfm_config"].update(conductivity="Calonne2011")
+    new_run().run()  # warns, and runs at the new code
+    assert drift_warnings(caplog) == 1
+    assert len(cfm_calls) == 2
+    caplog.clear()
+    monkeypatch.setattr(sim.run, "_run_code_drift_warned", False)  # a new process
+    for record in (data_path / "runs").rglob("manifest.json"):  # the run of the old code finished first
+        manifest = json.loads(record.read_text())
+        if manifest["wrapper"]["run_code_sha256"] == "code":
+            write_manifest(str(record.parent), {**manifest, "finished": "2026-10-01T00:00:00+00:00"})
+    folder()
+    assert "The run code changed" not in caplog.text

@@ -105,7 +105,7 @@ def old_manifest_module() -> types.ModuleType:
     return module
 
 
-def make_old_run(monkeypatch) -> dict:
+def make_old_run(monkeypatch, physRho: str = SITE[2]) -> dict:
     """A complete run of hash_version 2, as the code of d53fd13 wrote it. Returns the run of the code of now (its
     folder and manifest), which the old run must become."""
     seen = {}
@@ -117,7 +117,7 @@ def make_old_run(monkeypatch) -> dict:
 
     with monkeypatch.context() as patch:
         patch.setattr(sim.run, "run_hash_inputs", record)
-        run = CFMRun(*SITE, VERSION, site="CI-0")
+        run = CFMRun(*SITE[:2], physRho, *SITE[3:], VERSION, site="CI-0")
         new_folder = run.prepare()
     now_inputs = run._hash_inputs
 
@@ -132,7 +132,7 @@ def make_old_run(monkeypatch) -> dict:
     # the run of the code of now, then the manifest and folder of hash_version 2
     with monkeypatch.context() as patch:
         patch.setattr(sim.run, "run_folder", lambda *args: old_folder)
-        CFMRun(*SITE, VERSION, site="CI-0").run()
+        CFMRun(*SITE[:2], physRho, *SITE[3:], VERSION, site="CI-0").run()
     manifest = read_manifest(old_folder)
     manifest.update(run_hash=old_hash, hash_inputs=old_inputs, wrapper=wrapper)
     manifest["cfm_config"] = {**config["cfm_config"], "resultsFolder": old_folder}
@@ -195,7 +195,7 @@ def test_rekey_gives_the_run_hash_of_now(cfm_calls, monkeypatch, capsys, caplog)
     assert cfm_calls == [old]  # only the run of make_old_run
     assert "Complete run found" in caplog.text
     assert "The run code changed" not in caplog.text
-    assert run_code_drift(wrapper_identity()) == []
+    assert run_code_drift(wrapper_identity()) is None
 
 
 def test_second_apply_selects_nothing(cfm_calls, monkeypatch, capsys):
@@ -316,10 +316,35 @@ def test_the_rekey_does_not_hide_a_later_change(cfm_calls, monkeypatch, wrapper_
     occurs, as for a new run."""
     make_old_run(monkeypatch)
     assert rekey.main(["--run-code-version", "1", "--apply"]) == 0
-    assert run_code_drift(wrapper_identity()) == []
+    assert run_code_drift(wrapper_identity()) is None
     (wrapper_repo / "src" / "sim" / "runs.py").write_text("z = 2\n")  # not run code now
     commit_all(wrapper_repo)
-    assert run_code_drift(wrapper_identity()) == []
+    assert run_code_drift(wrapper_identity()) is None
     (wrapper_repo / "src" / "sim" / "run.py").write_text("x = 2\n")
     commit_all(wrapper_repo)
-    assert len(run_code_drift(wrapper_identity())) == 1
+    assert run_code_drift(wrapper_identity()) is not None
+
+
+def test_one_run_at_the_new_code_ends_the_warning(cfm_calls, monkeypatch, wrapper_repo, caplog):
+    """A re-keyed set of runs of one commit, then a change to the run code that needs no new version: the first run
+    warns, and after one complete run at the new code, no run warns (FEAT-005 open question 3)."""
+    old = [make_old_run(monkeypatch, physRho) for physRho in ("GSFC2020", "KuipersMunneke2015")]
+    assert rekey.main(["--run-code-version", "1", "--apply"]) == 0
+    for run in old:  # they finished some days before; the runs of this test can finish in the same second
+        write_manifest(run["new_folder"], {**read_manifest(run["new_folder"]), "finished": "2026-10-20T12:00:00+00:00"})
+    old_commit = read_manifest(old[0]["new_folder"])["wrapper"]["commit"]
+    (wrapper_repo / "src" / "sim" / "run.py").write_text("x = 1  # a comment\n")
+    commit_all(wrapper_repo)
+    caplog.set_level(logging.INFO)
+
+    CFMRun(*SITE[:2], "Barnola1991", *SITE[3:], VERSION, site="CI-0").run()  # a new run, at the new code
+    assert f"since the last run of run code version 1 (commit {old_commit}," in caplog.text
+    assert len(cfm_calls) == 3
+
+    caplog.clear()
+    monkeypatch.setattr(sim.run, "_run_code_drift_warned", False)  # a new process
+    assert run_code_drift(wrapper_identity()) is None
+    CFMRun(*SITE, VERSION, site="CI-0").run()  # a re-keyed run: skipped, with no warning
+    assert "Complete run found" in caplog.text
+    assert "The run code changed" not in caplog.text
+    assert len(cfm_calls) == 3

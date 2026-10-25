@@ -73,7 +73,7 @@ def check_cfm_identity(identity: dict) -> None:
 # log messages, names of local variables, a refactor that gives the same values, or code that a CFM run does not
 # import (src/plot/, src/sim/runs.py, scripts/). If you are not sure, increase it: a new version costs only new runs,
 # but an old version for a different result gives incorrect results. The drift warning of sim.run tells you when the
-# run code changed since the runs of this version
+# run code changed since the last complete run of this version
 RUN_CODE_VERSION = 1
 
 # the files and folders of src/ that a CFM run does not import (tests/test_identity.py checks this). They are not in
@@ -99,7 +99,7 @@ def wrapper_identity() -> dict | None:
     The run code is src/ without RUN_CODE_EXCLUDED, at HEAD. The run hash uses run_code_version (RUN_CODE_VERSION), not
     the code itself, so only a new version gives new runs (FEAT-005). run_code_sha256 is the SHA-256 of the git
     ls-tree list of the run code (the path and blob hash of each file). It is recorded only, like the commit and
-    src_tree (git rev-parse HEAD:src), and sim.run warns if it differs from that of the runs of the same version.
+    src_tree (git rev-parse HEAD:src), and sim.run warns if it differs from that of the last run of the version.
     src_code_changes are the uncommitted .py changes in the run code, which check_wrapper_identity() refuses, so that
     the recorded commit always gives the code of the run.
     """

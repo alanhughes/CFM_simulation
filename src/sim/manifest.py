@@ -120,17 +120,21 @@ def write_manifest(folder: str, manifest: dict) -> None:
     os.replace(tmp_path, path)
 
 
-def run_code_drift(wrapper: dict, root: str | None = None) -> list[dict]:
-    """The wrapper of each complete new run of the same run code version, but with a different run_code_sha256.
+def run_code_drift(wrapper: dict, root: str | None = None) -> dict | None:
+    """The wrapper (with its "finished") of the complete new run of the same run code version that finished last, if
+    its run_code_sha256 is different. None if it is the same, or if the version has no complete run.
 
     A run code version stands for one result of the run code (FEAT-005), so a different run_code_sha256 for one
-    version means that the run code changed without a new RUN_CODE_VERSION. This reads the manifests in runs/ as
-    sim.runs.find_runs does, but without sim.runs, which a CFM run does not import (RUN_CODE_EXCLUDED). It ignores the
-    migrated runs, as their wrapper code is not known, and the manifests with no wrapper.run_code_version (hash_version
-    2, from before FEAT-005): their run_code_sha256 includes src/sim/runs.py, so it cannot be compared. A manifest
-    that cannot be read is ignored too.
+    version means that the run code changed without a new RUN_CODE_VERSION. Only the last run counts (FEAT-005 open
+    question 3): after a change, the first run warns, and once a run of the new code is complete, the next runs do not.
+    With all the runs of the version, a change that needs no new version would warn for ever.
+
+    This reads the manifests in runs/ as sim.runs.find_runs does, but without sim.runs, which a CFM run does not import
+    (RUN_CODE_EXCLUDED). It ignores the runs that are not complete, the migrated runs, as their wrapper code is not
+    known, and the manifests with no wrapper.run_code_version (hash_version 2, from before FEAT-005): their
+    run_code_sha256 includes src/sim/runs.py, so it cannot be compared. A manifest that cannot be read is ignored too.
     """
-    drifted = []
+    last, last_key = None, None
     for path in sorted(glob.glob(os.path.join(root or runs_root(), "*", "*", "*", "*", MANIFEST_NAME))):
         try:
             manifest = read_manifest(os.path.dirname(path))
@@ -141,9 +145,21 @@ def run_code_drift(wrapper: dict, root: str | None = None) -> list[dict]:
         other = manifest.get("wrapper")
         if not isinstance(other, dict) or other.get("run_code_version") != wrapper["run_code_version"]:
             continue
-        if other.get("run_code_sha256") != wrapper["run_code_sha256"]:
-            drifted.append({**other, "finished": manifest.get("finished") or ""})
-    return drifted
+        key = (_finished_time(manifest.get("finished")), path)
+        if last_key is None or key > last_key:
+            last, last_key = {**other, "finished": manifest.get("finished")}, key
+    if last is None or last.get("run_code_sha256") == wrapper["run_code_sha256"]:
+        return None
+    return last
+
+
+def _finished_time(finished) -> datetime:
+    """The time of a "finished" value (ISO 8601), for the order of the runs. The earliest time if it is not known."""
+    try:
+        time = datetime.fromisoformat(finished)
+    except (TypeError, ValueError):
+        return datetime.min.replace(tzinfo=timezone.utc)
+    return time if time.tzinfo is not None else time.replace(tzinfo=timezone.utc)
 
 
 def is_alive(manifest: dict) -> bool | None:
