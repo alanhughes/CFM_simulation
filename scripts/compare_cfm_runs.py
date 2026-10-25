@@ -11,12 +11,18 @@ Only reads the two folders, never writes. Does not need config.yaml.
 Matrix mode (FEAT-001): --baseline <label> --cfm <label> [<label> ...] finds the runs with find_runs (from the
 manifests, so it needs config.yaml) and compares each run of each --cfm version with the baseline run of the same model
 point, schemes and years. It prints one row for each pair: the identical datasets of each file, and the physical
-differences of the summary(). The filters --site, --model-point, --rcm, --physrho, --liquid limit the runs. If more
-than one run of a version agrees, it uses the run that finished last (as find_run).
+differences of the summary(). The filters --site, --model-point, --rcm, --physrho, --liquid and --spin-end-year limit
+the runs. If more than one run of a version agrees, it uses the run that finished last (as find_run).
+
+A different spin_end_year gives different initial conditions, so the difference of such a pair contains the effect of
+the spin-up and of the CFM version together (FEAT-004). Each row gives spin_end_year and baseline_spin_end_year, and
+the note "spin-up differs" if they are different. The key of a pair (PAIR_KEY) does not contain spin_end_year, so such
+a pair is still compared. Give --spin-end-year to compare the runs of one spin-up only.
 
 Usage:
     - python scripts/compare_cfm_runs.py <new_output_folder> <reference_output_folder>
     - python scripts/compare_cfm_runs.py --baseline 3e3bf7e-speersm --cfm ab871c8 [--site CI-0] [--rcm RACMO] [--csv out.csv]
+    - python scripts/compare_cfm_runs.py --baseline 3e3bf7e-speersm --cfm ab871c8 --spin-end-year 1989
 """
 
 import argparse
@@ -29,6 +35,8 @@ import numpy as np
 CFM_FILES = ["CFMforcing.hdf5", "CFMspin.hdf5", "CFMresults.hdf5"]
 COMPARE_DEPTHS = [1, 5, 10, 20, 40]  # m
 COMPARE_DENSITIES = [550, 830]  # kg/m3
+# the Run properties that make a pair of the matrix mode. spin_end_year is not in the key: the row shows it (FEAT-004)
+PAIR_KEY = ("model_point", "physRho", "liquid", "start_year", "end_year")
 
 
 def datasets(h5_file: h5py.File) -> Dict[str, h5py.Dataset]:
@@ -116,7 +124,7 @@ def matrix(baseline: str, versions: list, filters: dict) -> list:
     from sim.runs import find_runs
 
     def key(run):
-        return (run.model_point, run.physRho, run.liquid, run.start_year, run.end_year)
+        return tuple(getattr(run, name) for name in PAIR_KEY)
 
     def latest(runs):
         by_key = {}
@@ -128,13 +136,19 @@ def matrix(baseline: str, versions: list, filters: dict) -> list:
     rows = []
     for version in versions:
         other = latest(find_runs(cfm=version, **filters))
-        for k in sorted(base.keys() | other.keys()):
-            row = dict(zip(("model_point", "physRho", "liquid", "start_year", "end_year"), k), cfm=version)
+        for k in sorted(base.keys() | other.keys(), key=lambda k: tuple(str(value) for value in k)):
+            row = dict(zip(PAIR_KEY, k), cfm=version)
+            if k in other:
+                row["spin_end_year"] = other[k].spin_end_year
+            if k in base:
+                row["baseline_spin_end_year"] = base[k].spin_end_year
             if k not in other or k not in base:
                 row["note"] = f"no run of {version if k not in other else baseline}"
             else:
                 row["run"], row["baseline_run"] = other[k].run_hash[:8], base[k].run_hash[:8]
                 row.update(summary(other[k].folder, base[k].folder))
+                if other[k].spin_end_year != base[k].spin_end_year:
+                    row["note"] = "; ".join(filter(None, ["spin-up differs", row.get("note")]))
             rows.append(row)
     return rows
 
@@ -194,6 +208,7 @@ if __name__ == "__main__":
     parser.add_argument("--rcm")
     parser.add_argument("--physrho")
     parser.add_argument("--liquid")
+    parser.add_argument("--spin-end-year", type=int, help="Matrix mode: only the runs of this spin_end_year")
     parser.add_argument("--csv", help="Matrix mode: also write the table to this CSV file")
     args = parser.parse_args()
 
@@ -208,6 +223,7 @@ if __name__ == "__main__":
             "rcm_name": args.rcm,
             "physRho": args.physrho,
             "liquid": args.liquid,
+            "spin_end_year": args.spin_end_year,
         }
         table = pd.DataFrame(matrix(args.baseline, args.cfm, filters))
         with pd.option_context("display.max_rows", None, "display.width", 250, "display.float_format", "{:.3g}".format):
