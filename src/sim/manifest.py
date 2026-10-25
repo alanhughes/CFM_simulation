@@ -15,6 +15,7 @@ The site names and coordinates are not in the run hash. A manifest from before r
 its first site only, in run.borehole_lat and run.borehole_lon.
 """
 
+import glob
 import hashlib
 import json
 import os
@@ -30,7 +31,9 @@ COMPLETE = "complete"
 FAILED = "failed"
 
 # a change to the content of run_hash_inputs() must change this number, so that the old and new hashes differ
-HASH_VERSION = 2  # 2: the run code (src/ without src/plot/) in place of the src/ tree
+# 2: the run code (src/ without src/plot/) in place of the src/ tree. 3: RUN_CODE_VERSION in place of the hash of the
+# run code (FEAT-005)
+HASH_VERSION = 3
 
 # the wrapper parameters in config.yaml that change the results
 WRAPPER_PARAMS = ("start_year", "end_year", "spin_end_year", "sublim_sf", "rho_bottom")
@@ -53,7 +56,11 @@ def run_hash_inputs(
     cfm_identity: dict,
     wrapper_identity: dict,
 ) -> dict:
-    """The document that the run hash is made from. It has no times, host, pid, paths, site names or coordinates."""
+    """The document that the run hash is made from. It has no times, host, pid, paths, site names or coordinates.
+
+    Of this repo, it has only the run code version (RUN_CODE_VERSION, FEAT-005). The commit, the status, src_tree and
+    run_code_sha256 of wrapper_identity are in the manifest only.
+    """
     return {
         "hash_version": HASH_VERSION,
         "cfm_config": {key: value for key, value in cfm_config.items() if key not in _UNHASHED_CFM_CONFIG_KEYS},
@@ -61,7 +68,7 @@ def run_hash_inputs(
         "model_point": {"tag": model_point_tag, "release": rcm_release},
         "forcing_csv_sha256": forcing_csv_sha256,
         "cfm": {key: cfm_identity[key] for key in _HASHED_CFM_IDENTITY_KEYS},
-        "wrapper_run_code_sha256": wrapper_identity["run_code_sha256"],
+        "wrapper_run_code_version": wrapper_identity["run_code_version"],
     }
 
 
@@ -111,6 +118,48 @@ def write_manifest(folder: str, manifest: dict) -> None:
         json.dump(manifest, file, indent=4, default=str)
         file.write("\n")
     os.replace(tmp_path, path)
+
+
+def run_code_drift(wrapper: dict, root: str | None = None) -> dict | None:
+    """The wrapper (with its "finished") of the complete new run of the same run code version that finished last, if
+    its run_code_sha256 is different. None if it is the same, or if the version has no complete run.
+
+    A run code version stands for one result of the run code (FEAT-005), so a different run_code_sha256 for one
+    version means that the run code changed without a new RUN_CODE_VERSION. Only the last run counts (FEAT-005 open
+    question 3): after a change, the first run warns, and once a run of the new code is complete, the next runs do not.
+    With all the runs of the version, a change that needs no new version would warn for ever.
+
+    This reads the manifests in runs/ as sim.runs.find_runs does, but without sim.runs, which a CFM run does not import
+    (RUN_CODE_EXCLUDED). It ignores the runs that are not complete, the migrated runs, as their wrapper code is not
+    known, and the manifests with no wrapper.run_code_version (hash_version 2, from before FEAT-005): their
+    run_code_sha256 includes src/sim/runs.py, so it cannot be compared. A manifest that cannot be read is ignored too.
+    """
+    last, last_key = None, None
+    for path in sorted(glob.glob(os.path.join(root or runs_root(), "*", "*", "*", "*", MANIFEST_NAME))):
+        try:
+            manifest = read_manifest(os.path.dirname(path))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(manifest, dict) or "migrated" in manifest or manifest.get("status") != COMPLETE:
+            continue
+        other = manifest.get("wrapper")
+        if not isinstance(other, dict) or other.get("run_code_version") != wrapper["run_code_version"]:
+            continue
+        key = (_finished_time(manifest.get("finished")), path)
+        if last_key is None or key > last_key:
+            last, last_key = {**other, "finished": manifest.get("finished")}, key
+    if last is None or last.get("run_code_sha256") == wrapper["run_code_sha256"]:
+        return None
+    return last
+
+
+def _finished_time(finished) -> datetime:
+    """The time of a "finished" value (ISO 8601), for the order of the runs. The earliest time if it is not known."""
+    try:
+        time = datetime.fromisoformat(finished)
+    except (TypeError, ValueError):
+        return datetime.min.replace(tzinfo=timezone.utc)
+    return time if time.tzinfo is not None else time.replace(tzinfo=timezone.utc)
 
 
 def is_alive(manifest: dict) -> bool | None:
