@@ -6,7 +6,8 @@ reports:
 2. Physical: firn air content (DIP), density and temperature at fixed depths, and the depths at which the final
    density profile reaches 550 and 830 kg/m3. This assumes grid_outputs is true, so both runs share a depth grid.
 
-Only reads the two folders, never writes. Does not need config.yaml.
+Only reads the two folders, never writes. Does not need config.yaml. The physical quantities are those of plot.metrics
+(FEAT-007), which also does not need config.yaml.
 
 Matrix mode (FEAT-001): --baseline <label> --cfm <label> [<label> ...] finds the runs with find_runs (from the
 manifests, so it needs config.yaml) and compares each run of each --cfm version with the baseline run of the same model
@@ -35,6 +36,8 @@ from typing import Dict
 
 import h5py
 import numpy as np
+
+from plot.metrics import depth_index, depth_of_density
 
 CFM_FILES = ["CFMforcing.hdf5", "CFMspin.hdf5", "CFMresults.hdf5"]
 COMPARE_DEPTHS = [1, 5, 10, 20, 40]  # m
@@ -113,8 +116,8 @@ def summary(new_dir: str, ref_dir: str) -> dict:
                 row["fac_final_diff_m"] = float(new["DIP"][-1, 1] - ref["DIP"][-1, 1])
                 row["density_final_mean_abs_diff"] = float(np.nanmean(np.abs(rho_new - rho_ref)))
                 for rho in COMPARE_DENSITIES:
-                    row[f"depth_{rho}_diff_m"] = float(depth[np.argmax(rho_new >= rho)] - depth[np.argmax(rho_ref >= rho)])
-                col = 1 + np.argmin(np.abs(depth - COMPARE_DEPTHS[-1]))
+                    row[f"depth_{rho}_diff_m"] = depth_of_density(depth, rho_new, rho) - depth_of_density(depth, rho_ref, rho)
+                col = 1 + depth_index(depth, COMPARE_DEPTHS[-1])
                 row[f"temp_{COMPARE_DEPTHS[-1]}m_mean_diff_K"] = float(
                     np.nanmean(new["temperature"][1:, col] - ref["temperature"][1:, col])
                 )
@@ -188,7 +191,7 @@ def compare_physical(new_dir: str, ref_dir: str) -> None:
         print("== At fixed depths, over all timesteps (new - reference)")
         print("  depth | density mean / max|d| (kg/m3) | temperature mean / max|d| (K)")
         for target in COMPARE_DEPTHS:
-            col = 1 + np.argmin(np.abs(depth - target))
+            col = 1 + depth_index(depth, target)
             d_rho = new["density"][1:, col] - ref["density"][1:, col]
             d_temp = new["temperature"][1:, col] - ref["temperature"][1:, col]
             print(
@@ -201,8 +204,8 @@ def compare_physical(new_dir: str, ref_dir: str) -> None:
         print(f"  mean |new - reference|: {np.nanmean(np.abs(rho_new - rho_ref)):.2f} kg/m3")
         for rho in COMPARE_DENSITIES:
             print(
-                f"  depth of {rho} kg/m3: new {depth[np.argmax(rho_new >= rho)]:.2f} m, "
-                f"reference {depth[np.argmax(rho_ref >= rho)]:.2f} m"
+                f"  depth of {rho} kg/m3: new {depth_of_density(depth, rho_new, rho):.2f} m, "
+                f"reference {depth_of_density(depth, rho_ref, rho):.2f} m"
             )
 
 
