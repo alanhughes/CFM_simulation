@@ -160,3 +160,10 @@ def largest_difference_by_time(density_a: np.ndarray, density_b: np.ndarray) -> 
     """The largest |a - b| over depth at each time step, on the depths that both runs have."""
     n = min(density_a.shape[1], density_b.shape[1])
     return np.nanmax(np.abs(density_a[:, :n] - density_b[:, :n]), axis=1)
+
+
+def annual(time: np.ndarray, values: np.ndarray, statistic=np.nanmax) -> Tuple[np.ndarray, np.ndarray]:
+    """A statistic of each calendar year (the maximum by default), at the middle of the year (year + 0.5)."""
+    years = np.floor(time).astype(int)
+    unique = np.unique(years)
+    return unique + 0.5, np.array([statistic(values[years == year]) for year in unique])

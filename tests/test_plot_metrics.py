@@ -146,3 +146,11 @@ def test_exactly_one(monkeypatch):
 def test_missing_results_file(tmp_path):
     with pytest.raises(FileNotFoundError):
         plot.output.RunOutput.from_folder(str(tmp_path))
+
+
+def test_annual_statistics():
+    time = np.array([1980.1, 1980.6, 1981.2, 1981.9])
+    years, values = metrics.annual(time, np.array([3.0, 5.0, 1.0, 2.0]))
+    np.testing.assert_array_equal(years, [1980.5, 1981.5])
+    np.testing.assert_array_equal(values, [5.0, 2.0])
+    np.testing.assert_array_equal(metrics.annual(time, np.array([3.0, 5.0, 1.0, 2.0]), np.median)[1], [4.0, 1.5])
