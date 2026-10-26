@@ -4,11 +4,12 @@ from typing import Dict, List, Literal
 
 import matplotlib.pyplot as plt
 import numpy as np
-import xarray as xr
 
 from cfm_config import cfm_version, config, sites
 from force.model_point import model_point_label, shared_model_points
 from force.years import run_years
+from plot import style
+from plot.output import RunOutput
 from sim.runs import find_run, spin_end_year_filter
 
 logging.basicConfig(level=logging.INFO)
@@ -76,7 +77,7 @@ class ResultsPlotter:
         self._thickness_change_range: List[float] = config[
             "thickness_change_range"
         ]  # Range of model time to plot for change in firn thickness (in years)
-        self._results_dicts: Dict[str, Dict[str, xr.DataArray]] = {}
+        self._outputs: Dict[str, RunOutput] = {}
 
     def plot(self) -> None:
         """Main function to load the data and create the plots for the specified physical densification schemes.
@@ -87,6 +88,7 @@ class ResultsPlotter:
         logging.info(f"Figures will be saved to: {self._figure_path}")
 
         logging.info("Loading data...")
+        style.apply()
         self._load_data()
 
         logging.info("Data loaded, now plotting DIP time series...")
@@ -99,88 +101,59 @@ class ResultsPlotter:
         self._plot_density_profiles()
 
     def _load_data(self) -> None:
-        """Load the CFM output data from the specified output paths and store it in a dictionary for plotting.
-        The data is stored in a dictionary where the keys are the output paths and the values are dictionaries containing the model time, depth, density, and temperature data as xarray DataArrays.
-        """
+        """The output of each scheme, as a plot.output.RunOutput (FEAT-007). The arrays are read when first used."""
 
         for phys_rho, output_path in zip(self.phys_rho, self._output_paths):
-            with xr.open_dataset(output_path, engine="h5netcdf", phony_dims="sort") as ds:
-                self._results_dicts[phys_rho] = {
-                    "model_time_matrix": ds["density"][1:, 0],
-                    "model_time_vector": ds["DIP"][1:, 0],
-                    "depth": ds["depth"][1:],
-                    "density": ds["density"][1:, 1:],
-                    "temperature": ds["temperature"][1:, 1:],
-                    "DIP": ds["DIP"][1:, 1:],
-                }
+            self._outputs[phys_rho] = RunOutput.from_folder(os.path.dirname(output_path), label=phys_rho)
 
     def _plot_density_profiles(self) -> None:
         """Plot the density profiles for each physical densification scheme and save the figures to the specified figure paths."""
 
-        for phys_rho, results_dict in self._results_dicts.items():
-            # Create a plot of density vs depth using matplotlib
-            plt.figure(figsize=(6, 8))
-            n_lines = results_dict["density"].shape[0]
+        for phys_rho, output in self._outputs.items():
+            # one line per output step; the colour is the time (a sequential scale), not the scheme
+            fig, ax = plt.subplots(figsize=(6, 8))
+            n_lines = output.density.shape[0]
             colors = plt.cm.viridis(np.linspace(0, 1, n_lines))
             for i in range(n_lines):
-                plt.plot(
-                    results_dict["density"][i, :],
-                    results_dict["depth"],
-                    linewidth=0.5,
-                    alpha=0.7,
-                    color=colors[i],
-                )
-            plt.xlabel("Density (kg/m^3)")
-            plt.ylabel("Depth (m)")
-            plt.title(f"{phys_rho} density profiles\n{self._model_point_label}")
-            plt.grid()
-            plt.gca().invert_yaxis()  # Invert y-axis to have depth increasing downwards
-            plt.savefig(f"{self._figure_path}/{phys_rho}_density_profile.png")
-            plt.close()
+                ax.plot(output.density[i, :], output.depth, linewidth=0.5, alpha=0.7, color=colors[i])
+            ax.set_xlabel("Density (kg/m³)")
+            years = plt.cm.ScalarMappable(cmap="viridis", norm=plt.Normalize(output.time[0], output.time[-1]))
+            fig.colorbar(years, ax=ax, label="Year", shrink=0.6)
+            ax.set_title(f"{phys_rho} density profiles, {int(output.time[0])}-{int(output.time[-1])}\n"
+                         f"{self._model_point_label}", fontsize=8)
+            style.depth_axis(ax, output.depth.max())
+            style.save_figure(fig, f"{self._figure_path}/{phys_rho}_density_profile.png")
 
     def _plot_DIP_time_series(self) -> None:
         """Plot the DIP time series for each physical densification scheme, all on the same plot, and save the figure to the specified figure path."""
 
-        plt.figure(figsize=(10, 6))
-        for phys_rho, results_dict in self._results_dicts.items():
-            plt.plot(
-                results_dict["model_time_vector"].values,
-                results_dict["DIP"][:, 0],
-                label=f"{phys_rho}",
-            )
-        plt.xlabel("Model Time (years)")
-        plt.ylabel("DIP (m)")
-        plt.title(f"DIP Time Series\n{self._model_point_label}")
-        plt.legend()
-        plt.grid()
-        plt.savefig(f"{self._figure_path}/DIP_time_series.png")
-        plt.close()
+        fig, ax = plt.subplots(figsize=(10, 6))
+        for phys_rho, output in self._outputs.items():
+            ax.plot(output.time, output.fac, color=style.scheme_colour(phys_rho), label=phys_rho)
+        ax.set_xlabel("Model time (years)")
+        ax.set_ylabel("Firn air content, DIP (m)")
+        ax.set_title(f"Firn air content\n{self._model_point_label}", fontsize=8)
+        ax.legend()
+        style.save_figure(fig, f"{self._figure_path}/DIP_time_series.png")
 
     def _plot_firn_thickness_change(self) -> None:
         """Plot the change in firn thickness over time for each physical densification scheme and save the figures to the specified figure paths.
         This function will create a plot of change in firn thickness vs model time for each physical densification scheme and save the figure to the corresponding figure path.
         """
 
-        plt.figure(figsize=(10, 6))
-        for phys_rho, results_dict in self._results_dicts.items():
-            dz = results_dict["depth"][:-1] - results_dict["depth"][1:]
-            dz = np.mean(dz)
-            firn_mask = results_dict["density"] <= config["cfm_config"]["RhoImp"]
+        fig, ax = plt.subplots(figsize=(10, 6))
+        for phys_rho, output in self._outputs.items():
+            dz = np.mean(output.depth[:-1] - output.depth[1:])
+            firn_mask = output.density <= config["cfm_config"]["RhoImp"]
             firn_thickness = np.sum(firn_mask * dz, axis=1)
             # firn_delta[i] represents the change from time t_i to t_{i+1}, so we
-            # associate it with the starting time t_i (model_time_vector[:-1]).
+            # associate it with the starting time t_i (time[:-1]).
             firn_delta = firn_thickness[1:] - firn_thickness[:-1]
-            plt.plot(
-                results_dict["model_time_vector"].values[:-1],
-                firn_delta,
-                label=f"{phys_rho}",
-            )
+            ax.plot(output.time[:-1], firn_delta, color=style.scheme_colour(phys_rho), label=phys_rho)
 
-        plt.xlim(self._thickness_change_range)  # Set x-axis limits to the specified range
-        plt.xlabel("Model Time (years)")
-        plt.ylabel("Change in Firn Thickness (m)")
-        plt.title(f"Change in Firn Thickness over Time\n{self._model_point_label}")
-        plt.grid()
-        plt.legend()
-        plt.savefig(f"{self._figure_path}/firn_thickness_change.png")
-        plt.close()
+        ax.set_xlim(self._thickness_change_range)  # Set x-axis limits to the specified range
+        ax.set_xlabel("Model time (years)")
+        ax.set_ylabel("Change in firn thickness (m)")
+        ax.set_title(f"Change in firn thickness over time\n{self._model_point_label}", fontsize=8)
+        ax.legend()
+        style.save_figure(fig, f"{self._figure_path}/firn_thickness_change.png")
