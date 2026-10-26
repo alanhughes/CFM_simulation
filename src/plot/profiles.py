@@ -66,17 +66,18 @@ def draw_profile(
     ax.plot(values, depth, color=style.scheme_colour(scheme), linestyle=linestyle, label=label or scheme, **kwargs)
 
 
-def reference_value(ax: plt.Axes, value: float, label: Optional[str] = None) -> None:
+def reference_value(ax: plt.Axes, value: float, label: Optional[str] = None, side: str = "right") -> None:
     """A vertical reference line (for example 830 kg/m3, or zero for a difference), labelled at the top of the panel
-    (the surface, where the profiles rarely are)."""
+    (the surface, where the profiles rarely are), on the given side of the line."""
     ax.axvline(value, zorder=1, **style.REFERENCE)
     if label:
         ax.annotate(
             label,
             (value, 1),
             xycoords=("data", "axes fraction"),
-            xytext=(3, -3),
+            xytext=(3 if side == "right" else -3, -3),
             textcoords="offset points",
+            ha="left" if side == "right" else "right",
             va="top",
             fontsize=7,
             color=style.TEXT_SECONDARY,
@@ -85,17 +86,18 @@ def reference_value(ax: plt.Axes, value: float, label: Optional[str] = None) -> 
 
 def shade_depths(ax: plt.Axes, bands: Iterable[Tuple[float, float, str]]) -> None:
     """Grey bands across the panel for depth intervals (top, bottom, label), for example the units of a borehole. The
-    bands alternate between two greys, and each label is vertical at the left edge, where firn profiles rarely are."""
+    bands alternate between two greys. Each label is vertical at the left edge, where firn profiles rarely are, and
+    starts at the top of its band (a legend often fills the bottom of a profile panel)."""
     for i, (top, bottom, label) in enumerate(bands):
         ax.axhspan(top, bottom, color=style.SHADE if i % 2 == 0 else "#f6f5f2", zorder=0, lw=0)
         ax.annotate(
             label,
-            (0, (top + bottom) / 2),
+            (0, top),
             xycoords=("axes fraction", "data"),
-            xytext=(4, 0),
+            xytext=(4, -4),
             textcoords="offset points",
             ha="left",
-            va="center",
+            va="top",
             rotation=90,
             fontsize=7,
             color=style.TEXT_SECONDARY,

@@ -10,9 +10,10 @@ magenta have less than 3:1 contrast on white, so a figure with them always has a
 
 import os
 import string
-from typing import Iterable
+from typing import Iterable, Optional, Tuple
 
 import matplotlib as mpl
+import matplotlib.lines
 import matplotlib.pyplot as plt
 
 SCHEMES = ("GSFC2020", "HLdynamic", "Crocus", "Barnola1991", "Ligtenberg2011")
@@ -65,6 +66,20 @@ def pair_style(pair: str, side: str) -> str:
     if side not in (current, alternative):
         raise ValueError(f"{side!r} is not a side of the pair {pair!r} {PAIRS[pair]}")
     return CURRENT if side == current else ALTERNATIVE
+
+
+def pair_handles(pair: str, labels: Optional[Tuple[str, str]] = None) -> list:
+    """Legend entries for the two sides of a pair: a dark solid line and a dark dashed line."""
+    names = labels or PAIRS[pair]
+    return [
+        mpl.lines.Line2D([], [], color=TEXT_SECONDARY, linestyle=CURRENT, label=names[0]),
+        mpl.lines.Line2D([], [], color=TEXT_SECONDARY, linestyle=ALTERNATIVE, label=names[1]),
+    ]
+
+
+def scheme_handles(schemes: Iterable[str]) -> list:
+    """Legend entries for the scheme colours, as short solid lines."""
+    return [mpl.lines.Line2D([], [], color=scheme_colour(s), label=s) for s in schemes]
 
 
 def apply() -> None:
