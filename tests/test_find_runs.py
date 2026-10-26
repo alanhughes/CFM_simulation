@@ -33,9 +33,11 @@ def make_run(
     status=COMPLETE,
     finished="2026-10-16T10:00:00",
     sites=("CI-0",),
+    cfm_config=None,
     **run_keys,
 ):
-    """A run folder with a manifest. run_keys are more keys of manifest["run"], for example site_coords."""
+    """A run folder with a manifest. run_keys are more keys of manifest["run"], for example site_coords. cfm_config is
+    the cfm_config of the manifest; None gives a manifest without it, as a migrated run."""
     rcm = link_sites.rcm_of_tag(tag)
     folder = run_folder(tag, physRho, "bucket", 1979, 2024, cfm, hash_)
     os.makedirs(folder)
@@ -56,6 +58,8 @@ def make_run(
         "cfm": {"label": cfm, "commit": "c"},
         "finished": finished,
     }
+    if cfm_config is not None:
+        manifest["cfm_config"] = cfm_config
     write_manifest(folder, manifest)
     return folder
 
@@ -116,6 +120,22 @@ def test_find_run_gives_the_last_finished(runs, caplog):
     assert find_run(site="CI-0", rcm_name="RACMO", physRho="GSFC2020", run_hash="aaaa").folder == runs["gsfc"]
     with pytest.raises(LookupError, match="No run"):
         find_run(physRho="Ligtenberg2011")
+
+
+def test_meltwater_solver(runs, caplog):
+    ncz = make_run("RACMO_261_126", hash_="8" * 64, finished="2026-10-17T10:00:00",
+                   cfm_config={"meltwater_solver": "ncz"})
+    no_key = make_run("RACMO_261_126", hash_="7" * 64, cfm_config={"physRho": "GSFC2020"})
+    filters = dict(model_point="RACMO_261_126", physRho="GSFC2020", cfm="ab871c8")
+    # a run without the key (no cfm_config, or a cfm_config without meltwater_solver) used the default, enthalpy
+    assert folders(find_runs(meltwater_solver="enthalpy", **filters)) == sorted([runs["gsfc"], no_key])
+    assert folders(find_runs(meltwater_solver="ncz", **filters)) == [ncz]
+    assert len(find_runs(**filters)) == 3
+    # find_run gives the solver of each run in its warning
+    assert find_run(**filters).folder == ncz
+    assert "ncz" in caplog.text and "enthalpy" in caplog.text
+    table = runs_table(find_runs(**filters))
+    assert sorted(table["meltwater_solver"]) == ["enthalpy", "enthalpy", "ncz"]
 
 
 def test_results_file_and_table(runs):

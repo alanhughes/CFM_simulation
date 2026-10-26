@@ -11,9 +11,9 @@ Only reads the two folders, never writes. Does not need config.yaml. The physica
 
 Matrix mode (FEAT-001): --baseline <label> --cfm <label> [<label> ...] finds the runs with find_runs (from the
 manifests, so it needs config.yaml) and compares each run of each --cfm version with the baseline run of the same model
-point, schemes, years and spin_end_year. It prints one row for each pair: the identical datasets of each file, and the
-physical differences of the summary(). The filters --site, --model-point, --rcm, --physrho, --liquid and
---spin-end-year limit the runs. If more than one run of a version agrees, it uses the run that finished last (as
+point, schemes, meltwater solver, years and spin_end_year. It prints one row for each pair: the identical datasets of
+each file, and the physical differences of the summary(). The filters --site, --model-point, --rcm, --physrho,
+--liquid, --meltwater-solver and --spin-end-year limit the runs. If more than one run of a version agrees, it uses the run that finished last (as
 find_run).
 
 A different spin_end_year gives different initial conditions, so the difference of such a pair would contain the effect
@@ -43,7 +43,7 @@ CFM_FILES = ["CFMforcing.hdf5", "CFMspin.hdf5", "CFMresults.hdf5"]
 COMPARE_DEPTHS = [1, 5, 10, 20, 40]  # m
 COMPARE_DENSITIES = [550, 830]  # kg/m3
 # the Run properties that make a pair of the matrix mode, with spin_end_year unless --allow-spin-mismatch (FEAT-004)
-PAIR_KEY = ("model_point", "physRho", "liquid", "start_year", "end_year")
+PAIR_KEY = ("model_point", "physRho", "liquid", "meltwater_solver", "start_year", "end_year")
 
 
 def datasets(h5_file: h5py.File) -> Dict[str, h5py.Dataset]:
@@ -220,6 +220,7 @@ if __name__ == "__main__":
     parser.add_argument("--rcm")
     parser.add_argument("--physrho")
     parser.add_argument("--liquid")
+    parser.add_argument("--meltwater-solver", help="Matrix mode: only the runs of this meltwater_solver")
     parser.add_argument("--spin-end-year", type=int, help="Matrix mode: only the runs of this spin_end_year")
     parser.add_argument(
         "--allow-spin-mismatch",
@@ -241,6 +242,7 @@ if __name__ == "__main__":
             "rcm_name": args.rcm,
             "physRho": args.physrho,
             "liquid": args.liquid,
+            "meltwater_solver": args.meltwater_solver,
             "spin_end_year": args.spin_end_year,
         }
         table = pd.DataFrame(matrix(args.baseline, args.cfm, filters, allow_spin_mismatch=args.allow_spin_mismatch))

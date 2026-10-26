@@ -20,12 +20,13 @@ compare = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(compare)
 
 
-def make_run(physRho, cfm, hash_, spin_end_year, tag="MAR_119_17"):
+def make_run(physRho, cfm, hash_, spin_end_year, tag="MAR_119_17", meltwater_solver=None):
     folder = run_folder(tag, physRho, "bucket", 1979, 2024, cfm, hash_)
     os.makedirs(folder)
     write_manifest(
         folder,
         {
+            "cfm_config": {"meltwater_solver": meltwater_solver} if meltwater_solver else {},
             "status": COMPLETE,
             "run_hash": hash_,
             "run": {
@@ -93,3 +94,15 @@ def test_matrix_of_one_spin_end_year(runs):
     assert gsfc["note"] == "no run of old"
     assert gsfc["spin_end_year"] == 1989 and "baseline_spin_end_year" not in gsfc
     assert of_scheme(rows, "Crocus")[0]["run"] == "dddddddd"
+
+
+def test_matrix_pairs_the_runs_of_one_meltwater_solver(runs):
+    # a run of new with another solver does not replace the enthalpy run of new in the pair
+    make_run("Crocus", "new", "e" * 64, 1989, meltwater_solver="ncz")
+    rows = of_scheme(compare.matrix("old", ["new"], {}), "Crocus")
+    (enthalpy,) = [row for row in rows if row["meltwater_solver"] == "enthalpy"]
+    assert enthalpy["run"] == "dddddddd" and enthalpy["baseline_run"] == "cccccccc"
+    (ncz,) = [row for row in rows if row["meltwater_solver"] == "ncz"]
+    assert ncz["note"] == "no run of old with spin_end_year 1989"
+    (only,) = of_scheme(compare.matrix("old", ["new"], {"meltwater_solver": "enthalpy"}), "Crocus")
+    assert only["run"] == "dddddddd"

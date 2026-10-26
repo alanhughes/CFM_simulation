@@ -35,6 +35,9 @@ from sim.manifest import COMPLETE, MANIFEST_NAME, read_manifest, runs_root
 # the (run folder, site) pairs that had a site warning in this process, so that each pair gives one warning only
 _warned_sites: Set[Tuple[str, str]] = set()
 
+# the meltwater solver of a run whose cfm_config has no meltwater_solver key: the default of the CFM
+DEFAULT_MELTWATER_SOLVER = "enthalpy"
+
 
 @dataclass(frozen=True)
 class Run:
@@ -67,6 +70,13 @@ class Run:
     @property
     def liquid(self) -> str:
         return self.manifest["run"]["liquid"]
+
+    @property
+    def meltwater_solver(self) -> str:
+        """The meltwater_solver of the cfm_config of the run. A run without the key used the default of the CFM,
+        DEFAULT_MELTWATER_SOLVER: a run that did not set it, a run of a CFM before 3.2.0 (3e3bf7e has no such key) and
+        a migrated run with no cfm_config in its manifest."""
+        return (self.manifest.get("cfm_config") or {}).get("meltwater_solver", DEFAULT_MELTWATER_SOLVER)
 
     @property
     def start_year(self) -> int:
@@ -131,6 +141,7 @@ class Run:
             "rcm_name": self.rcm_name,
             "physRho": self.physRho,
             "liquid": self.liquid,
+            "meltwater_solver": self.meltwater_solver,
             "start_year": self.start_year,
             "end_year": self.end_year,
             "spin_end_year": self.spin_end_year,
@@ -157,6 +168,7 @@ def find_runs(
     rcm_name: Optional[str] = None,
     physRho: Optional[str] = None,
     liquid: Optional[str] = None,
+    meltwater_solver: Optional[str] = None,
     start_year: Optional[int] = None,
     end_year: Optional[int] = None,
     spin_end_year: Optional[int] = None,
@@ -168,7 +180,8 @@ def find_runs(
     """The runs that agree with all the filters that are not None, sorted by folder.
 
     site is a name in sites.yaml: the runs of its model point. With site and no rcm_name, the model point of the site is
-    found for each RCM that has runs. model_point is a ModelPoint.tag. spin_end_year is run.spin_end_year of the
+    found for each RCM that has runs. model_point is a ModelPoint.tag. meltwater_solver is run.meltwater_solver: a run
+    without the key agrees with DEFAULT_MELTWATER_SOLVER. spin_end_year is run.spin_end_year of the
     manifest: a run with no spin_end_year (a migrated-1 run, FEAT-004) never agrees with it. cfm is a label in
     cfm_versions. run_hash can be the first characters of the hash. status is "complete" by default; None gives all the
     runs.
@@ -204,6 +217,7 @@ def find_runs(
         wanted = {
             "physRho": physRho,
             "liquid": liquid,
+            "meltwater_solver": meltwater_solver,
             "start_year": start_year,
             "end_year": end_year,
             "spin_end_year": spin_end_year,
@@ -277,12 +291,15 @@ def find_run(**filters) -> Run:
     runs.sort(key=lambda run: run.finished)
     if len(runs) > 1:
         def describe(run):
-            return f"{run.run_hash[:8]} ({run.cfm}, spin_end_year {run.spin_end_year}, finished {run.finished})"
+            return (
+                f"{run.run_hash[:8]} ({run.cfm}, {run.meltwater_solver}, spin_end_year {run.spin_end_year}, "
+                f"finished {run.finished})"
+            )
 
         others = ", ".join(describe(run) for run in runs[:-1])
         logging.warning(
             f"{len(runs)} runs with {given}. Using {describe(runs[-1])}, the last to finish. The others: {others}. "
-            "Give run_hash or spin_end_year to choose one."
+            "Give run_hash, meltwater_solver or spin_end_year to choose one."
         )
     return runs[-1]
 
@@ -323,6 +340,7 @@ ROW_KEYS = (
     "rcm_name",
     "physRho",
     "liquid",
+    "meltwater_solver",
     "start_year",
     "end_year",
     "spin_end_year",

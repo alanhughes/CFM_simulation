@@ -27,6 +27,7 @@ if __name__ == "__main__":
     parser.add_argument("--rcm")
     parser.add_argument("--physrho")
     parser.add_argument("--liquid")
+    parser.add_argument("--meltwater-solver", help="cfm_config meltwater_solver (a run without the key: enthalpy)")
     parser.add_argument("--start-year", type=int)
     parser.add_argument("--end-year", type=int)
     parser.add_argument("--spin-end-year", type=int, help="run.spin_end_year in the manifest (no filter if not given)")
@@ -47,6 +48,7 @@ if __name__ == "__main__":
         rcm_name=args.rcm,
         physRho=args.physrho,
         liquid=args.liquid,
+        meltwater_solver=args.meltwater_solver,
         start_year=args.start_year,
         end_year=args.end_year,
         spin_end_year=args.spin_end_year,
