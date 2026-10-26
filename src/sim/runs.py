@@ -29,6 +29,7 @@ from typing import Dict, List, Optional, Set, Tuple, Union
 import pandas as pd
 
 from cfm_config import config, format_coord, sites as site_table
+from force.grid import great_circle_km
 from sim.manifest import COMPLETE, MANIFEST_NAME, read_manifest, runs_root
 
 # the (run folder, site) pairs that had a site warning in this process, so that each pair gives one warning only
@@ -103,6 +104,16 @@ class Run:
         if first is not None and first not in coords and None not in (run.get("borehole_lat"), run.get("borehole_lon")):
             coords[first] = (run["borehole_lat"], run["borehole_lon"])
         return coords
+
+    def distance_km(self, site: str) -> Optional[float]:
+        """The distance in km from a site of the run to the centre of its cell, from run.site_coords and
+        run.model_point. The manifest records distance_km for the first site only; this gives it for each site
+        (FEAT-006, FEAT-007). None if the manifest has no coordinates for the site or no cell centre."""
+        cell = self.manifest["run"]["model_point"]
+        coords = self.site_coords.get(site)
+        if coords is None or cell.get("cell_lat") is None or cell.get("cell_lon") is None:
+            return None
+        return float(great_circle_km(coords[0], coords[1], cell["cell_lat"], cell["cell_lon"]))
 
     @property
     def finished(self) -> str:
