@@ -257,3 +257,25 @@ def test_spin_end_year(runs, caplog):
 def test_no_run_gives_the_spin_end_year(runs):
     with pytest.raises(LookupError, match="Only the runs with spin_end_year 1995 agree"):
         find_run(physRho="Crocus", spin_end_year=1995)
+
+
+def test_distance_km_for_each_site(runs):
+    """The distance from each site of a run to its cell centre (FEAT-007), with the real values of the RACMO cell
+    (259, 137), which WI-70 and Y208 share before the BUG-002 fix."""
+    folder = make_run(
+        "RACMO_259_137",
+        hash_="d" * 64,
+        sites=("WI-70", "Y208"),
+        model_point={"tag": "RACMO_259_137", "cell_lat": -67.55758973191408, "cell_lon": -63.36961198220811},
+        site_coords={"WI-70": [-67.5, -63.336], "Y208": [-67.564, -63.257]},
+    )
+    run = sim.runs.Run(folder, sim.runs.read_manifest(folder))
+    assert run.distance_km("WI-70") == pytest.approx(6.56, abs=0.01)
+    assert run.distance_km("Y208") == pytest.approx(4.8, abs=0.1)
+    assert run.distance_km("CI-0") is None
+
+
+def test_distance_km_without_a_cell_centre(runs):
+    folder = make_run("RACMO_259_137", hash_="e" * 64, site_coords={"CI-0": [-66.403, -63.376]})
+    run = sim.runs.Run(folder, sim.runs.read_manifest(folder))
+    assert run.distance_km("CI-0") is None
