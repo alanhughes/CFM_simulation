@@ -182,13 +182,19 @@ def run_code_drift(wrapper: dict, root: str | None = None) -> dict | None:
     question 3): after a change, the first run warns, and once a run of the new code is complete, the next runs do not.
     With all the runs of the version, a change that needs no new version would warn for ever.
 
-    This reads the manifests in runs/ as sim.runs.find_runs does, but without sim.runs, which a CFM run does not import
-    (RUN_CODE_EXCLUDED). It ignores the runs that are not complete, the migrated runs, as their wrapper code is not
-    known, and the manifests with no wrapper.run_code_version (hash_version 2, from before FEAT-005): their
-    run_code_sha256 includes src/sim/runs.py, so it cannot be compared. A manifest that cannot be read is ignored too.
+    This reads the manifests in root, or in each root of run_roots() if root is None, as sim.runs.find_runs does,
+    but without sim.runs, which a CFM run does not import (RUN_CODE_EXCLUDED). The last run is the last of all the
+    roots, the local root and the share (FEAT-008): after its local copy is removed, the last run is on the share
+    only. A share that is not available is left out (run_roots). It ignores the runs that are not complete, the
+    migrated runs, as their wrapper code is not known, and the manifests with no wrapper.run_code_version
+    (hash_version 2, from before FEAT-005): their run_code_sha256 includes src/sim/runs.py, so it cannot be compared.
+    A manifest that cannot be read is ignored too.
     """
+    roots = [root] if root else run_roots()
+    pattern = os.path.join("*", "*", "*", "*", MANIFEST_NAME)
+    paths = [path for one_root in roots for path in glob.glob(os.path.join(one_root, pattern))]
     last, last_key = None, None
-    for path in sorted(glob.glob(os.path.join(root or runs_root(), "*", "*", "*", "*", MANIFEST_NAME))):
+    for path in sorted(paths):
         try:
             manifest = read_manifest(os.path.dirname(path))
         except (OSError, ValueError):

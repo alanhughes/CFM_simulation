@@ -5,13 +5,17 @@ The CFM itself is not run: _run_cfm, the model point and the CFM and wrapper ide
 forcing CSV is a small file in a forcing cache in tmp_path.
 """
 
+import errno
 import json
 import os
+import shutil
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
+import sim.manifest
 import sim.run
 from cfm_config import config
 from force.cache import forcing_csv_path, forcing_json_path
@@ -434,3 +438,171 @@ def test_a_complete_run_of_the_new_code_ends_the_warning(data_path, cfm_calls, i
             write_manifest(str(record.parent), {**manifest, "finished": "2026-10-01T00:00:00+00:00"})
     folder()
     assert "The run code changed" not in caplog.text
+
+
+# a run on the share (FEAT-008). The share is a folder in tmp_path, never the real share; a share run is a run made in
+# the local root and then moved to the folder with the same relative path in the share root, as the sync copies it
+
+
+@pytest.fixture
+def share(data_path, tmp_path, monkeypatch):
+    """CFM_share_data_path in tmp_path, with a runs/ folder."""
+    data = tmp_path / "share"
+    (data / "runs").mkdir(parents=True)
+    monkeypatch.setitem(config, "CFM_share_data_path", str(data))
+    return data
+
+
+def share_folder(share) -> str:
+    """The share folder with the same relative path as the local run folder."""
+    return os.path.join(share, os.path.relpath(folder(), config["CFM_data_path"]))
+
+
+def move_to_share(share, copy: bool = False) -> str:
+    """Move (or copy) the local run to the share. Returns the share folder."""
+    target = share_folder(share)
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    (shutil.copytree if copy else shutil.move)(folder(), target)
+    return target
+
+
+def share_not_available(monkeypatch, share) -> list:
+    """A "soft" mount that stops: os.stat of a share path raises OSError. Returns the paths it was called with."""
+    real_stat = os.stat
+    attempts = []
+
+    def stat(path, *args, **kwargs):
+        if str(path).startswith(str(share)):
+            attempts.append(path)
+            raise OSError(errno.EIO, "Input/output error", str(path))
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(sim.manifest.os, "stat", stat)
+    return attempts
+
+
+def test_complete_share_run_is_skipped(share, cfm_calls, caplog):
+    new_run(site="CI-0").run()
+    target = move_to_share(share)
+    new_run(site="CI-0").run()
+    assert len(cfm_calls) == 1
+    assert f"Complete run found on the share at {target}, skipping." in caplog.text
+    assert not os.path.exists(folder())  # no local folder is made
+    assert read_manifest(target)["run"]["sites"] == ["CI-0"]
+
+
+def test_share_run_with_other_hash_is_refused(share, cfm_calls):
+    target = share_folder(share)
+    os.makedirs(target)
+    write_manifest(target, {"status": COMPLETE, "run_hash": "0" * 64})
+    for force in (False, True):
+        with pytest.raises(RuntimeError, match="contains the run"):
+            new_run(force=force).run()
+    assert cfm_calls == []
+    assert not os.path.exists(folder())
+
+
+def test_force_runs_in_the_local_folder(share, cfm_calls):
+    new_run(site="CI-0").run()
+    target = move_to_share(share)
+    before = {name: (Path(target) / name).read_bytes() for name in os.listdir(target)}
+    new_run(site="CI-0", force=True).run()
+    assert len(cfm_calls) == 2 and cfm_calls[1] == folder()
+    assert read_manifest(folder())["status"] == COMPLETE
+    assert {name: (Path(target) / name).read_bytes() for name in os.listdir(target)} == before  # the share copy
+    # the local run is found first now
+    new_run(site="CI-0").run()
+    assert len(cfm_calls) == 2
+
+
+def test_share_run_that_is_not_complete_runs_in_the_local_folder(share, cfm_calls):
+    new_run().run()
+    target = move_to_share(share)
+    write_manifest(target, {**read_manifest(target), "status": FAILED})
+    new_run().run()
+    assert len(cfm_calls) == 2
+    assert read_manifest(folder())["status"] == COMPLETE
+    assert read_manifest(target)["status"] == FAILED
+
+
+def test_new_site_of_a_share_run_is_written_on_the_share(share, cfm_calls):
+    new_run(site="CI-0").run()
+    target = move_to_share(share)
+    CFMRun(-66.41, -63.38, *SITE[2:], VERSION, site="CI-0-twin").run()  # another site in the same cell
+    assert len(cfm_calls) == 1
+    run = read_manifest(target)["run"]
+    assert run["sites"] == ["CI-0", "CI-0-twin"]
+    assert run["site_coords"] == {"CI-0": [-66.403, -63.376], "CI-0-twin": [-66.41, -63.38]}
+    assert not os.path.exists(folder())
+    assert not os.path.exists(os.path.join(target, "manifest.json.tmp"))
+
+
+def test_new_site_of_a_run_in_both_locations_is_written_locally(share, cfm_calls):
+    new_run(site="CI-0").run()
+    target = move_to_share(share, copy=True)
+    CFMRun(-66.41, -63.38, *SITE[2:], VERSION, site="CI-0-twin").run()
+    assert len(cfm_calls) == 1
+    assert read_manifest(folder())["run"]["sites"] == ["CI-0", "CI-0-twin"]
+    assert read_manifest(target)["run"]["sites"] == ["CI-0"]  # the sync writes the union later
+
+
+def test_failed_write_of_a_share_site_warns(share, cfm_calls, monkeypatch, caplog):
+    new_run(site="CI-0").run()
+    target = move_to_share(share)
+    real_write = sim.run.write_manifest
+
+    def write(folder_, manifest):
+        if str(folder_).startswith(str(share)):
+            raise OSError(errno.EIO, "Input/output error", folder_)
+        real_write(folder_, manifest)
+
+    monkeypatch.setattr(sim.run, "write_manifest", write)
+    CFMRun(-66.41, -63.38, *SITE[2:], VERSION, site="CI-0-twin").run()  # no error
+    assert len(cfm_calls) == 1
+    assert f"Cannot add site CI-0-twin to the sites of {target}" in caplog.text
+    assert read_manifest(target)["run"]["sites"] == ["CI-0"]
+
+
+def test_failed_write_of_a_local_site_is_an_error(data_path, cfm_calls, monkeypatch):
+    new_run(site="CI-0").run()
+
+    def write(folder_, manifest):
+        raise OSError(errno.ENOSPC, "No space left on device", folder_)
+
+    monkeypatch.setattr(sim.run, "write_manifest", write)
+    with pytest.raises(OSError):
+        CFMRun(-66.41, -63.38, *SITE[2:], VERSION, site="CI-0-twin").run()
+
+
+def test_share_not_available_runs_in_the_local_folder(share, cfm_calls, monkeypatch, caplog):
+    new_run().run()
+    move_to_share(share)
+    sim.manifest.reset_share_check()  # a new process
+    attempts = share_not_available(monkeypatch, share)
+    new_run().run()
+    new_run().run()
+    assert len(cfm_calls) == 2  # the share run is not seen; the second run finds the new local run
+    assert read_manifest(folder())["status"] == COMPLETE
+    assert len(attempts) == 1  # one check of the share in the process
+    assert "is not available" in caplog.text
+
+
+def test_drift_finds_the_last_run_on_the_share(data_path, share, cfm_calls, identities, caplog):
+    """The drift check compares with the last run of the version in the two roots (FEAT-008)."""
+    wrapper = identities["wrapper"]
+    write_run(data_path, "older", "2026-10-01T10:00:00+00:00", dict(wrapper))
+    write_run(share, "last", "2026-10-02T10:00:00+00:00", {**wrapper, "commit": "w9", "run_code_sha256": "new"})
+    folder()
+    assert "since the last run of run code version 1 (commit w9, finished 2026-10-02T10:00:00+00:00)" in caplog.text
+
+
+def test_drift_with_no_local_run(share, cfm_calls, identities, caplog):
+    """After prune_local_runs.py removes the local copies, the last run of the version is on the share only."""
+    wrapper = identities["wrapper"]
+    write_run(share, "last", "2026-10-02T10:00:00+00:00", {**wrapper, "commit": "w9", "run_code_sha256": "new"})
+    assert not os.path.exists(os.path.join(config["CFM_data_path"], "runs"))
+    folder()
+    assert "since the last run of run code version 1 (commit w9, finished 2026-10-02T10:00:00+00:00)" in caplog.text
+    # an explicit root is that root only
+    assert sim.manifest.run_code_drift(wrapper, root=str(share / "runs"))["commit"] == "w9"
+    assert sim.manifest.run_code_drift(wrapper, root=os.path.join(config["CFM_data_path"], "runs")) is None
