@@ -17,11 +17,10 @@ from sim.manifest import run_roots, runs_root, share_runs_root
 
 @pytest.fixture
 def local(tmp_path, monkeypatch):
-    """CFM_data_path in tmp_path, with its runs/ folder, and no CFM_share_data_path."""
+    """CFM_data_path in tmp_path, with its runs/ folder, and no CFM_share_data_path (as in the test config)."""
     data = tmp_path / "local"
     (data / "runs").mkdir(parents=True)
     monkeypatch.setitem(config, "CFM_data_path", str(data))
-    monkeypatch.delitem(config, "CFM_share_data_path", raising=False)
     return data
 
 
