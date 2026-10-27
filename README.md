@@ -32,6 +32,7 @@ The keys that are machine-specific are the directory block at the top:
 | `cpom_mount` | Where the luna CPOM share is mounted (see below) — absolute path, `~` is not expanded |
 | `cfm_versions` / `default_cfm_version` | The CFM checkouts (each `CFM_main` folder) with the Python for each, and the one to use by default |
 | `CFM_data_path` | Where the wrapper writes forcing CSVs, model output and figures — a local folder or your own folder on the share (see below) |
+| `CFM_share_data_path` | Optional. Your own folder on the share with a copy of the runs, e.g. `{cpom_mount}/<username>/CFM_data` (FEAT-008). The runs are still written to `CFM_data_path`. Leave it out to use `CFM_data_path` only |
 | `MAR_data_path` / `RACMO_data_path` / `RACMO23_data_path` | Where the raw RCM NetCDF forcing files are read from |
 | `in_situ_data_path` | Where the in situ depth-density CSVs are read from |
 

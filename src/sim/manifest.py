@@ -18,11 +18,13 @@ its first site only, in run.borehole_lat and run.borehole_lon.
 import glob
 import hashlib
 import json
+import logging
 import os
 import socket
+import stat
 from datetime import datetime, timezone
 
-from cfm_config import config
+from cfm_config import config, share_data_path
 
 MANIFEST_NAME = "manifest.json"
 
@@ -81,6 +83,34 @@ def run_hash(inputs: dict) -> str:
 def runs_root() -> str:
     """The root folder of all the runs."""
     return os.path.join(config["CFM_data_path"], "runs")
+
+
+def share_runs_root() -> str | None:
+    """The root folder of the copy of the runs on the share, {CFM_share_data_path}/runs (FEAT-008), or None if
+    CFM_share_data_path is not set."""
+    share = share_data_path()
+    return None if share is None else os.path.join(share, "runs")
+
+
+def run_roots() -> list[str]:
+    """The run roots that exist, local first: [runs_root(), share_runs_root()] (FEAT-008).
+
+    A root that is not set or does not exist is left out. The share is mounted "soft": if it is not available, the
+    check of the share root raises OSError after a timeout, not an empty folder. Then this gives a warning and the
+    local root only.
+    """
+    roots = [runs_root()] if os.path.isdir(runs_root()) else []
+    share = share_runs_root()
+    if share is not None:
+        try:
+            # os.stat, not os.path.isdir, which hides the OSError of a share that is not available
+            if stat.S_ISDIR(os.stat(share).st_mode):
+                roots.append(share)
+        except (FileNotFoundError, NotADirectoryError):
+            pass
+        except OSError as error:
+            logging.warning(f"The share run root {share} is not available ({error}). Using the local runs only.")
+    return roots
 
 
 def run_folder(
