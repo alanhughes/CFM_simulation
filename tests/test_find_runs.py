@@ -2,14 +2,19 @@
 
 The run folders are made with manifests only. The model point of a site is a stub, so no RCM data is read. The site
 coordinate check uses the sites of the real sites.yaml.
+
+The tests at the end use two run roots, the local root and a share root in tmp_path (FEAT-008). The real share is never
+read.
 """
 
+import errno
 import importlib.util
 import os
 from pathlib import Path
 
 import pytest
 
+import sim.manifest
 import sim.runs
 from cfm_config import config
 from cfm_config import sites as site_table
@@ -299,3 +304,132 @@ def test_distance_km_without_a_cell_centre(runs):
     folder = make_run("RACMO_259_137", hash_="e" * 64, site_coords={"CI-0": [-66.403, -63.376]})
     run = sim.runs.Run(folder, sim.runs.read_manifest(folder))
     assert run.distance_km("CI-0") is None
+
+
+# two run roots: the local runs and the copy of the runs on the share (FEAT-008). The share is a folder in tmp_path; a
+# share that is not available is a stub of os.stat that raises OSError
+
+
+@pytest.fixture
+def share(tmp_path, monkeypatch, runs):
+    """CFM_share_data_path in tmp_path, with a runs/ folder. The local runs are those of the runs fixture."""
+    data = tmp_path / "share"
+    (data / "runs").mkdir(parents=True)
+    monkeypatch.setitem(config, "CFM_share_data_path", str(data))
+    return data
+
+
+def make_share_run(share, tag, **keys):
+    """A run folder with a manifest in the share root, as make_run makes it in the local root."""
+    local = config["CFM_data_path"]
+    config["CFM_data_path"] = str(share)
+    try:
+        return make_run(tag, **keys)
+    finally:
+        config["CFM_data_path"] = local
+
+
+def by_folder(found):
+    return {run.folder: run for run in found}
+
+
+def test_local_run_only(share, runs):
+    found = by_folder(find_runs())
+    assert len(found) == 5
+    assert {run.location for run in found.values()} == {"local"}
+    assert found[runs["crocus"]].results_file == os.path.join(runs["crocus"], "CFMresults.hdf5")
+
+
+def test_share_run_only(share, runs):
+    folder = make_share_run(share, "RACMO_300_300", hash_="1" * 64, cfm_config={"resultsFileName": "out.hdf5"})
+    assert folder.startswith(str(share / "runs"))
+    (run,) = find_runs(model_point="RACMO_300_300")
+    assert run.location == "share"
+    assert run.folder == folder
+    assert run.results_file == os.path.join(folder, "out.hdf5")
+    assert len(find_runs()) == 6
+
+
+def test_run_in_both_roots(share, runs):
+    folder = make_share_run(share, "RACMO_261_126", physRho="Crocus", hash_="b" * 64)
+    found = find_runs(physRho="Crocus")
+    (run,) = found  # no duplicate
+    assert run.location == "both"
+    assert run.folder == runs["crocus"] != folder
+    assert run.results_file == os.path.join(runs["crocus"], "CFMresults.hdf5")
+    assert find_run(physRho="Crocus").location == "both"
+    assert len(find_runs()) == 5
+    assert sorted(run.location for run in find_runs()) == ["both", "local", "local", "local", "local"]
+
+
+def test_share_copy_when_the_local_copy_does_not_agree(share, runs):
+    """A run hash that is failed in the local root and complete on the share: the share copy."""
+    folder = make_share_run(share, "RACMO_261_126", physRho="HLdynamic", hash_="d" * 64)
+    (run,) = find_runs(physRho="HLdynamic")
+    assert (run.folder, run.location) == (folder, "share")
+    # with all the statuses, the two copies agree: the local copy
+    (run,) = find_runs(physRho="HLdynamic", status=None)
+    assert (run.folder, run.location) == (runs["failed"], "both")
+
+
+def test_no_local_runs_folder(tmp_path, monkeypatch):
+    monkeypatch.setitem(config, "CFM_data_path", str(tmp_path / "local"))  # no runs/ folder
+    monkeypatch.setitem(config, "CFM_share_data_path", str(tmp_path / "share"))
+    monkeypatch.setattr(sim.runs, "_site_model_point", lambda site, rcm: SITE_TAGS[site][rcm])
+    folder = make_share_run(tmp_path / "share", "RACMO_261_126")
+    assert not os.path.exists(tmp_path / "local" / "runs")
+    (run,) = find_runs(site="CI-0")
+    assert (run.folder, run.location) == (folder, "share")
+
+
+def test_filters_across_both_roots(share, runs):
+    share_only = {
+        "gsfc": make_share_run(share, "RACMO_261_126", hash_="1" * 64),
+        "old_cfm": make_share_run(share, "RACMO_261_126", cfm="3e3bf7e-speersm", hash_="2" * 64),
+        "mar": make_share_run(share, "MAR_1_2", hash_="3" * 64),
+        "failed": make_share_run(share, "RACMO_100_100", hash_="4" * 64, status=FAILED),
+    }
+    make_share_run(share, "RACMO_261_126", physRho="Crocus", hash_="b" * 64)  # also local
+    assert folders(find_runs(site="CI-0", rcm_name="RACMO", physRho="GSFC2020")) == sorted(
+        [runs["gsfc"], runs["old_cfm"], share_only["gsfc"], share_only["old_cfm"]]
+    )
+    assert folders(find_runs(model_point="MAR_1_2")) == sorted([runs["mar"], share_only["mar"]])
+    assert folders(find_runs(cfm="3e3bf7e-speersm")) == sorted([runs["old_cfm"], share_only["old_cfm"]])
+    assert folders(find_runs(run_hash="333")) == [share_only["mar"]]
+    assert folders(find_runs(status=FAILED)) == sorted([runs["failed"], share_only["failed"]])
+    assert folders(find_runs(physRho="Crocus")) == [runs["crocus"]]
+    assert len(find_runs(status=None)) == 6 + 4
+
+
+def test_explicit_root_is_one_root(share, runs):
+    folder = make_share_run(share, "RACMO_300_300", hash_="1" * 64)
+    assert folders(find_runs(root=str(share / "runs"))) == [folder]
+    assert {run.location for run in find_runs(root=str(share / "runs"))} == {"share"}
+    assert folder not in folders(find_runs(root=str(Path(config["CFM_data_path"]) / "runs")))
+    assert {run.location for run in find_runs(root=str(Path(config["CFM_data_path"]) / "runs"))} == {"local"}
+
+
+def test_share_not_available(share, runs, monkeypatch, caplog):
+    """A "soft" mount that stops gives an OSError after a timeout: one check, one warning, the local runs only."""
+    make_share_run(share, "RACMO_300_300", hash_="1" * 64)
+    real_stat = os.stat
+    attempts = []
+
+    def stat(path, *args, **kwargs):
+        if str(path).startswith(str(share)):
+            attempts.append(path)
+            raise OSError(errno.EIO, "Input/output error", str(path))
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(sim.manifest.os, "stat", stat)
+    for _ in range(3):
+        found = find_runs()
+        assert len(found) == 5
+        assert {run.location for run in found} == {"local"}
+    assert len(attempts) == 1
+    warnings = [record.getMessage() for record in caplog.records if "not available" in record.getMessage()]
+    assert len(warnings) == 1 and str(share / "runs") in warnings[0]
+    # the check is made again after reset_share_check (for example in the next test)
+    monkeypatch.setattr(sim.manifest.os, "stat", real_stat)
+    sim.manifest.reset_share_check()
+    assert len(find_runs()) == 6

@@ -1,7 +1,8 @@
 """Tests for the optional key CFM_share_data_path and the run roots, share_runs_root() and run_roots() (FEAT-008).
 
 The two roots are temporary folders. The real share is never read: CFM_share_data_path is set to a folder in tmp_path,
-and a share that is not available is a stub of os.stat that raises OSError.
+and a share that is not available is a stub of os.stat that raises OSError. tests/conftest.py clears the result of the
+check of the share root before each test.
 """
 
 import errno
@@ -12,7 +13,7 @@ import pytest
 
 import sim.manifest
 from cfm_config import config, expand_cpom_mount, share_data_path
-from sim.manifest import run_roots, runs_root, share_runs_root
+from sim.manifest import reset_share_check, run_roots, runs_root, share_runs_root
 
 
 @pytest.fixture
@@ -123,3 +124,14 @@ def test_local_root_missing(share):
 def test_no_root(local):
     os.rmdir(runs_root())
     assert run_roots() == []
+
+
+def test_share_check_is_kept(share):
+    """The share root is checked once in each process: a share runs/ folder made later is used after
+    reset_share_check() only."""
+    share.mkdir()
+    assert run_roots() == [runs_root()]
+    (share / "runs").mkdir()
+    assert run_roots() == [runs_root()]
+    reset_share_check()
+    assert run_roots() == [runs_root(), str(share / "runs")]

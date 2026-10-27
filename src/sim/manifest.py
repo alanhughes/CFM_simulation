@@ -92,25 +92,48 @@ def share_runs_root() -> str | None:
     return None if share is None else os.path.join(share, "runs")
 
 
+# the result of the check of each share run root in this process (FEAT-008): True if it is a folder, False if it does
+# not exist or the share is not available. See run_roots()
+_share_root_checks: dict[str, bool] = {}
+
+
 def run_roots() -> list[str]:
     """The run roots that exist, local first: [runs_root(), share_runs_root()] (FEAT-008).
 
     A root that is not set or does not exist is left out. The share is mounted "soft": if it is not available, the
     check of the share root raises OSError after a timeout, not an empty folder. Then this gives a warning and the
     local root only.
+
+    The share root is checked once in each process, and the result is used again: a share that is not available
+    gives one timeout and one warning, not one for each call. reset_share_check() clears the result (for the tests).
     """
     roots = [runs_root()] if os.path.isdir(runs_root()) else []
     share = share_runs_root()
     if share is not None:
-        try:
-            # os.stat, not os.path.isdir, which hides the OSError of a share that is not available
-            if stat.S_ISDIR(os.stat(share).st_mode):
-                roots.append(share)
-        except (FileNotFoundError, NotADirectoryError):
-            pass
-        except OSError as error:
-            logging.warning(f"The share run root {share} is not available ({error}). Using the local runs only.")
+        if share not in _share_root_checks:
+            _share_root_checks[share] = _is_share_root(share)
+        if _share_root_checks[share]:
+            roots.append(share)
     return roots
+
+
+def _is_share_root(share: str) -> bool:
+    """Whether the share run root is a folder. False, with a warning, if the share is not available."""
+    try:
+        # os.stat, not os.path.isdir, which hides the OSError of a share that is not available
+        return stat.S_ISDIR(os.stat(share).st_mode)
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+    except OSError as error:
+        logging.warning(
+            f"The share run root {share} is not available ({error}). Using the local runs only in this process."
+        )
+        return False
+
+
+def reset_share_check() -> None:
+    """Forget the result of the check of the share root, so that the next run_roots() checks it again."""
+    _share_root_checks.clear()
 
 
 def run_folder(
