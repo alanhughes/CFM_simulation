@@ -830,11 +830,13 @@ def process_fast(
     """Write the forcing CSV and JSON of each ProcessRACMO/ProcessRACMO23/ProcessMAR in one pass. Returns the CSVs
     written.
 
-    Existing CSVs are checked with ProcessBase._check_existing and skipped, unless overwrite is true. Processors that
-    share a model point share one CSV. The cache box contains cache_sites (default: all active sites in sites.yaml) and
-    the locations of the processors. The calling script must have the `if __name__ == "__main__":` guard (BUG-008).
+    Existing CSVs, local or on the share (FEAT-008), are checked with ProcessBase._check_existing and skipped, unless
+    overwrite is true. Processors that share a model point share one CSV. The cache box contains cache_sites (default:
+    all active sites in sites.yaml) and the locations of the processors. The calling script must have the
+    `if __name__ == "__main__":` guard (BUG-008).
     """
     from cfm_config import config, sites
+    from force.cache import find_forcing_csv
 
     datasets = {p._rcm_name for p in processors}
     if len(datasets) != 1:
@@ -847,9 +849,12 @@ def process_fast(
         if save_path in seen:
             continue
         seen.add(save_path)
-        if os.path.exists(save_path) and not overwrite:
-            logging.info(f"Processed RCM data already exists at {save_path}. Skipping processing.")
-            processor._check_existing(save_path, start_year, end_year, f"{dataset} ({processor.model_point.release})")
+        # a CSV that is only on the share is not extracted again (FEAT-008); a new CSV is written to save_path
+        existing = None if overwrite else find_forcing_csv(processor.model_point)
+        # find_forcing_csv gives save_path if the CSV is not local and not on the share: only then stat it again
+        if existing is not None and (existing != save_path or os.path.exists(save_path)):
+            logging.info(f"Processed RCM data already exists at {existing}. Skipping processing.")
+            processor._check_existing(existing, start_year, end_year, f"{dataset} ({processor.model_point.release})")
         else:
             todo.append(processor)
     if not todo:

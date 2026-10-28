@@ -24,7 +24,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 from cfm_config import cfm_version, config, sites
-from force.cache import forcing_csv_path
+from force.cache import find_forcing_csv
 from force.model_point import model_point, model_point_label, shared_model_points
 from force.years import add_year_arguments, run_years
 from sim.runs import add_spin_end_year_argument, find_run, spin_end_year_filter
@@ -81,7 +81,7 @@ if __name__ == "__main__":
     os.makedirs(save_dir, exist_ok=True)
 
     for site, info in borehole_sites.items():
-        input_path = forcing_csv_path(model_point(info, rcm_name), start, end)
+        input_path = find_forcing_csv(model_point(info, rcm_name), start, end)
         input_df = pd.read_csv(input_path, parse_dates=["TIME"])
         input_df = input_df[input_df["TIME"] >= pd.Timestamp("1980-01-01")]
 

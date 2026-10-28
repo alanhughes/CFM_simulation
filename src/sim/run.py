@@ -13,7 +13,7 @@ from typing import Literal
 
 from cfm_config import config
 from cfm_config import cfm_version as lookup_cfm_version
-from force.cache import forcing_csv_path, forcing_json_path, sha256_file
+from force.cache import find_forcing_csv, forcing_json_path, sha256_file
 from force.model_point import ModelPoint, model_point_at
 from sim.identity import check_cfm_identity, check_wrapper_identity, measure_cfm_identity, wrapper_identity
 from sim.manifest import (
@@ -212,7 +212,7 @@ class CFMRun:
 
         # the forcing CSV must exist before the folder is made, so a missing CSV leaves nothing behind (BUG-004)
         self._model_point = model_point_at(self._borehole_lat, self._borehole_lon, self._rcm_name)
-        self._force_data_path = forcing_csv_path(self._model_point)
+        self._force_data_path = find_forcing_csv(self._model_point)
         forcing_sha256 = self._forcing_sha256()
 
         self._hash_inputs = run_hash_inputs(

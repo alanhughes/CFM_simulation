@@ -606,3 +606,36 @@ def test_drift_with_no_local_run(share, cfm_calls, identities, caplog):
     # an explicit root is that root only
     assert sim.manifest.run_code_drift(wrapper, root=str(share / "runs"))["commit"] == "w9"
     assert sim.manifest.run_code_drift(wrapper, root=os.path.join(config["CFM_data_path"], "runs")) is None
+
+
+def move_forcing_to_share(data_path, monkeypatch, record_sha256=None):
+    """Move the forcing CSV of MODEL_POINT to the share, with a JSON file next to it. Returns the share path."""
+    local = forcing_csv_path(MODEL_POINT)
+    share = data_path / "share" / "forcing" / os.path.relpath(local, data_path / "forcing")
+    os.makedirs(share.parent)
+    shutil.move(local, share)
+    if record_sha256 is not None:
+        share.with_suffix(".json").write_text(json.dumps({"csv_sha256": record_sha256}))
+    monkeypatch.setitem(config, "CFM_share_data_path", str(data_path / "share"))
+    return share
+
+
+def test_run_reads_forcing_csv_from_share(data_path, cfm_calls, monkeypatch):
+    """The forcing CSV is only on the share: the run reads it there, with its JSON file, and the manifest records the
+    share path. The run hash is the one of the same CSV read locally (FEAT-008)."""
+    local_folder = folder()
+    sha256 = sim.run.sha256_file(forcing_csv_path(MODEL_POINT))
+    share = move_forcing_to_share(data_path, monkeypatch, record_sha256=sha256)
+    assert folder() == local_folder
+    new_run().run()
+    manifest = read_manifest(local_folder)
+    assert manifest["status"] == COMPLETE
+    assert manifest["run"]["forcing_csv"] == str(share)
+    assert manifest["hash_inputs"]["forcing_csv_sha256"] == sha256
+    assert len(cfm_calls) == 1
+
+
+def test_run_checks_the_json_of_a_share_forcing_csv(data_path, monkeypatch):
+    move_forcing_to_share(data_path, monkeypatch, record_sha256="0" * 64)
+    with pytest.raises(RuntimeError, match="records " + "0" * 64):
+        folder()

@@ -7,8 +7,9 @@ cpom_mount and CFM_data_path are folders in a temporary folder that are not made
 So a test reads or writes real data, or the share, only if it sets the path itself. The original is restored after
 the test.
 
-The result of the check of the share root (sim.manifest.run_roots, FEAT-008) is kept for the process, so it is cleared
-before and after each test: a test with a share that is not available does not change the next test.
+The result of the check of the share root (sim.manifest.run_roots) and of the share (cfm_config.share_available,
+FEAT-008) is kept for the process, so it is cleared before and after each test: a test with a share that is not
+available does not change the next test.
 
 A test that needs the real config.yaml (tests/test_reference_cfm.py) is marked with @pytest.mark.real_config.
 """
@@ -20,6 +21,7 @@ import pytest
 import yaml
 
 import cfm_config
+from cfm_config import reset_share_available
 from sim.manifest import reset_share_check
 
 EXAMPLE_CONFIG = Path(__file__).resolve().parents[1] / "config.example.yaml"
@@ -39,9 +41,11 @@ def isolated_config(request, tmp_path_factory):
     the same folder."""
     config = cfm_config.config
     reset_share_check()
+    reset_share_available()
     if request.node.get_closest_marker("real_config"):
         yield config
         reset_share_check()
+        reset_share_available()
         return
     folder = tmp_path_factory.mktemp("config")
     cfg = copy.deepcopy(_example)
@@ -55,3 +59,4 @@ def isolated_config(request, tmp_path_factory):
     config.clear()
     config.update(original)
     reset_share_check()
+    reset_share_available()

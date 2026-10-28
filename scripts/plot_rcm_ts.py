@@ -23,7 +23,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 from cfm_config import config, sites
-from force.cache import forcing_csv_path
+from force.cache import find_forcing_csv
 from force.model_point import model_point, model_point_label, shared_model_points
 from force.years import add_year_arguments, run_years
 
@@ -43,9 +43,9 @@ if __name__ == "__main__":
         # Load MAR and RACMO data for the model point of this site from the forcing cache
         mar = years["MAR"]
         racmo = years["RACMO"]
-        mar_data_dict[site] = pd.read_csv(forcing_csv_path(model_point(info, "MAR"), mar.start_year, mar.end_year))
+        mar_data_dict[site] = pd.read_csv(find_forcing_csv(model_point(info, "MAR"), mar.start_year, mar.end_year))
         racmo_data_dict[site] = pd.read_csv(
-            forcing_csv_path(model_point(info, "RACMO"), racmo.start_year, racmo.end_year)
+            find_forcing_csv(model_point(info, "RACMO"), racmo.start_year, racmo.end_year)
         )
 
     # model points of each site; also the inactive sites, to show all the sites that share a grid cell (FEAT-002)

@@ -6,7 +6,9 @@
 forcing_data_path defaults to {CFM_data_path}/forcing. The forcing data does not depend on the CFM version, so all the
 CFM versions use this one folder. The JSON file records where the CSV came from (see write_forcing_json).
 
-forcing_csv_path() is the only place that builds the forcing CSV path.
+forcing_csv_path() is the only place that builds the local forcing CSV path. It is also the path for a write.
+find_forcing_csv() is for a read: it gives the share copy, {CFM_share_data_path}/forcing/..., when the CSV is not
+local and the share has it (FEAT-008).
 """
 
 import datetime
@@ -18,7 +20,7 @@ from typing import Dict, Iterable, List, Optional
 
 import pandas as pd
 
-from cfm_config import config
+from cfm_config import config, find_on_share, share_data_path
 
 from .model_point import ModelPoint, rcm_data_path
 
@@ -38,6 +40,16 @@ def forcing_csv_path(mp: ModelPoint, start_year: Optional[int] = None, end_year:
     start_year = config["start_year"] if start_year is None else start_year
     end_year = config["end_year"] if end_year is None else end_year
     return os.path.join(forcing_root(), mp.rcm_name, mp.release, f"{mp.i}_{mp.j}_{start_year}_{end_year}.csv")
+
+
+def find_forcing_csv(mp: ModelPoint, start_year: Optional[int] = None, end_year: Optional[int] = None) -> str:
+    """Path of the forcing CSV for a read: the local file if it exists, else the share copy if it exists, else the
+    local path (the caller then gives its usual error). Do not use for a write: use forcing_csv_path."""
+    local = forcing_csv_path(mp, start_year, end_year)
+    share = share_data_path()
+    if share is None:
+        return local
+    return find_on_share(local, os.path.join(share, "forcing", os.path.relpath(local, forcing_root())))
 
 
 def forcing_json_path(csv_path: str) -> str:
