@@ -5,6 +5,7 @@ comparison of compare_cfm_runs is a stub.
 """
 
 import errno
+import hashlib
 import importlib.util
 import os
 import shutil
@@ -879,3 +880,134 @@ def test_file_sha_mismatch_is_failed_and_not_published(roots, monkeypatch):
     assert (share / ".incoming" / "melt" / MELT).exists()
     assert not (share / "melt" / MELT).exists()
     assert "FAILED" in next((local / "sync-logs").iterdir()).read_text()
+
+
+# --runs: a copy in parts
+
+REL_B = os.path.join("RACMO_259_136", "Crocus_bucket_1979-2023", "ab871c8", "bbbbbbbb")
+REL_C = os.path.join("RACMO_259_136", "Crocus_bucket_1979-2023", "3e3bf7e-speersm", "cccccccc")
+CSV_B = os.path.join("RACMO", "r1", "259_136_1979_2023.csv")
+
+
+def make_run_with_forcing(root, rel, hash_, forcing):
+    """A run whose hash inputs have the SHA-256 of the bytes forcing."""
+    extra = {"hash_inputs": {"forcing_csv_sha256": hashlib.sha256(forcing).hexdigest()}}
+    folder = make_run(root, rel=rel, hash_=hash_)
+    manifest = read_manifest(str(folder))
+    manifest.update(extra)
+    write_manifest(str(folder), manifest)
+    return folder
+
+
+def test_runs_selects_the_runs_and_their_forcing_csv(roots, capsys):
+    local, share = roots
+    make_run_with_forcing(local, REL, HASH, b"csv")  # MAR, uses CSV
+    make_run_with_forcing(local, REL_B, "b" * 64, b"racmo csv")
+    make_run_with_forcing(local, REL_C, "c" * 64, b"racmo csv")
+    make_forcing(local)
+    (local / "forcing" / CSV_B).parent.mkdir(parents=True)
+    (local / "forcing" / CSV_B).write_bytes(b"racmo csv")
+    (local / "forcing" / CSV_B.replace(".csv", ".json")).write_bytes(b"{}")
+    (local / "melt").mkdir()
+    (local / "melt" / MELT).write_bytes(b"nc")
+    assert sync_args("--runs", "RACMO_259_136/*/ab871c8/*") == 0
+    out = capsys.readouterr().out
+    assert "1 of them match" in out and "Files: NEW 2, SAME 0" in out
+    assert tree(share) == []
+    assert sync_args("--runs", "RACMO_259_136/*/ab871c8/*", "--apply") == 0
+    assert (share / "runs" / REL_B / "CFMresults.hdf5").exists()
+    assert not (share / "runs" / REL).exists() and not (share / "runs" / REL_C).exists()
+    assert (share / "forcing" / CSV_B).read_bytes() == b"racmo csv"
+    assert (share / "forcing" / CSV_B.replace(".csv", ".json")).exists()
+    assert not (share / "forcing" / CSV).exists()
+    assert not (share / "melt").exists()
+
+
+def test_runs_more_than_one_pattern(roots, capsys):
+    local, share = roots
+    make_run(local)
+    make_run(local, rel=REL_B, hash_="b" * 64)
+    make_run(local, rel=REL_C, hash_="c" * 64)
+    assert sync_args("--runs", "MAR_*", "--runs", "*/ab871c8/bbbbbbbb", "--apply") == 0
+    assert (share / "runs" / REL).exists() and (share / "runs" / REL_B).exists()
+    assert not (share / "runs" / REL_C).exists()
+
+
+def test_runs_without_a_match_is_an_error(roots, capsys):
+    local, share = roots
+    make_run(local)
+    make_run(local, rel=REL_B, hash_="b" * 64, status="failed")  # only complete runs are selected
+    make_forcing(local)
+    assert sync_args("--runs", "RACMO_*", "--apply") == 1
+    assert "selects no complete local run" in capsys.readouterr().err
+    assert tree(share) == []
+    assert not (local / "sync-logs").exists()
+
+
+def test_runs_whose_forcing_is_not_local_copy_no_file(roots, capsys):
+    local, share = roots
+    make_run_with_forcing(local, REL_B, "b" * 64, b"forcing of another VM")
+    make_run(local, rel=REL_C, hash_="c" * 64)  # an old manifest with no hash inputs
+    make_forcing(local)
+    assert sync_args("--runs", "RACMO_*", "--apply") == 0
+    out, err = capsys.readouterr()
+    assert "Files:" not in out
+    assert f"no readable local forcing CSV for {REL_B}" in err and f"forcing CSV for {REL_C}" in err
+    assert (share / "runs" / REL_B).exists() and (share / "runs" / REL_C).exists()
+    assert not (share / "forcing").exists()
+
+
+def test_runs_with_null_hash_inputs_and_trailing_slash(roots, capsys):
+    local, share = roots
+    folder = make_run(local, rel=REL_B, hash_="b" * 64)
+    manifest = read_manifest(str(folder))
+    manifest["hash_inputs"] = None
+    write_manifest(str(folder), manifest)
+    assert sync_args("--runs", REL_B + os.sep, "--apply") == 0  # tab completion
+    assert (share / "runs" / REL_B).exists()
+    assert "no readable local forcing CSV" in capsys.readouterr().err
+
+
+def test_runs_an_unreadable_other_csv_does_not_stop_the_selected_csv(roots, monkeypatch, capsys):
+    local, share = roots
+    make_run_with_forcing(local, REL_B, "b" * 64, b"racmo csv")
+    make_forcing(local)  # another CSV, with the .json file {} (no csv_sha256): its CSV is read
+    (local / "forcing" / CSV_B).parent.mkdir(parents=True)
+    (local / "forcing" / CSV_B).write_bytes(b"racmo csv")
+    (local / "forcing" / CSV_B.replace(".csv", ".json")).write_bytes(
+        forcing_json(hashlib.sha256(b"racmo csv").hexdigest())
+    )
+    real = sync.sha256_file
+    other = str(local / "forcing" / CSV)
+
+    def sha256_file(path):
+        if str(path) == other:
+            raise OSError(errno.EIO, "input/output error")
+        return real(path)
+
+    monkeypatch.setattr(sync, "sha256_file", sha256_file)
+    assert sync_args("--runs", "RACMO_*", "--apply") == 0
+    assert (share / "forcing" / CSV_B).read_bytes() == b"racmo csv"
+    assert not (share / "forcing" / CSV).exists()
+    assert f"forcing{os.sep}{CSV} cannot be read" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("json_data", [None, b"{trunc", b'{"host": "vm1"}'])
+def test_runs_csv_sha_from_the_csv_without_a_usable_json(roots, json_data):
+    local, share = roots
+    make_run_with_forcing(local, REL_B, "b" * 64, b"racmo csv")
+    (local / "forcing" / CSV_B).parent.mkdir(parents=True)
+    (local / "forcing" / CSV_B).write_bytes(b"racmo csv")
+    if json_data is not None:
+        (local / "forcing" / CSV_B.replace(".csv", ".json")).write_bytes(json_data)
+    # the CSV is selected in each case. With no .json file (local or share), it is ERROR, as without --runs
+    assert sync_args("--runs", "RACMO_*") == (0 if json_data is not None else 1)
+    assert sync.files_of_runs(sync.select_files(), sync.select_local_runs())[-1].rel == os.path.join("forcing", CSV_B)
+
+
+def test_runs_absolute_pattern(roots):
+    local, share = roots
+    make_run(local, rel=REL_B, hash_="b" * 64)
+    make_run(local, rel=REL_C, hash_="c" * 64)
+    assert sync_args("--runs", str(local / "runs" / "RACMO_259_136" / "*" / "ab871c8" / "*"), "--apply") == 0
+    assert (share / "runs" / REL_B).exists() and not (share / "runs" / REL_C).exists()

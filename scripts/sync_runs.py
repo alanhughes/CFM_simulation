@@ -86,16 +86,25 @@ that exists gets a suffix), and makes {CFM_share_data_path}/runs if it does not 
 (with --apply) a decision is missing; else 0. The script stops with an error if CFM_share_data_path is not set or the
 share is not available.
 
+--runs PATTERN (one or more times) selects only the complete local runs whose path relative to the run root matches a
+pattern (fnmatch: "*" also matches "/"; an absolute pattern is made relative to the run root), for a copy in parts.
+The files are then only the forcing CSVs of the selected runs (a local CSV whose SHA-256 is the forcing_csv_sha256 of
+the run hash inputs; the csv_sha256 of its .json file is used if it has one), each with its .json file. A run whose
+forcing CSV is not in the local cache has no file, and a warning. No melt map is selected: no run gives its melt map.
+A pattern that selects no run stops the script with an error (exit code 1), before it classifies a run.
+
 Usage:
     python scripts/sync_runs.py                          # dry run (the default)
     python scripts/sync_runs.py --apply                  # copy; ask for each DIFFER run
     python scripts/sync_runs.py --apply --on-differ keep # one decision for all the DIFFER runs
+    python scripts/sync_runs.py --runs 'RACMO_259_136/*/ab871c8/*'   # dry run of 5 runs and their forcing CSV
 """
 
 import argparse
 import copy
 import datetime
 import errno
+import fnmatch
 import glob
 import importlib.util
 import json
@@ -173,6 +182,21 @@ def select_local_runs() -> List[str]:
         if isinstance(manifest, dict) and manifest.get("status") == COMPLETE:
             folders.append(folder)
     return folders
+
+
+def match_runs(folders: List[str], patterns: List[str]) -> List[str]:
+    """The folders whose path relative to the run root matches one of the patterns (fnmatch, case-sensitive). A
+    pattern is normalised first, so a trailing "/" (of a tab completion) or a leading "./" also matches, and an
+    absolute pattern is made relative to the run root."""
+    patterns = [
+        os.path.relpath(pattern, runs_root()) if os.path.isabs(pattern) else os.path.normpath(pattern)
+        for pattern in patterns
+    ]
+    return [
+        folder
+        for folder in folders
+        if any(fnmatch.fnmatchcase(os.path.relpath(folder, runs_root()), pattern) for pattern in patterns)
+    ]
 
 
 def all_files(folder: str) -> Set[str]:
@@ -500,6 +524,53 @@ def select_files() -> List[RunSync]:
     return items
 
 
+def _csv_sha256(csv: RunSync) -> Optional[str]:
+    """The SHA-256 of a forcing CSV: the csv_sha256 of its .json file, so the CSVs that no run uses are not read; else
+    (no .json file, no csv_sha256, or a .json file that cannot be read) the SHA-256 of the CSV. None, with a warning,
+    if the CSV cannot be read."""
+    if csv.requires is not None:
+        try:
+            with open(csv.requires.local) as json_file:
+                metadata = json.load(json_file)
+            if isinstance(metadata, dict) and metadata.get("csv_sha256"):
+                return metadata["csv_sha256"]
+        except (OSError, ValueError):
+            pass  # the CSV is read instead
+    try:
+        return sha256_file(csv.local)
+    except (OSError, ValueError) as error:
+        print(f"WARNING: {csv.rel} cannot be read ({error}); it is not selected.", file=sys.stderr)
+        return None
+
+
+def files_of_runs(items: List[RunSync], folders: List[str]) -> List[RunSync]:
+    """The forcing CSVs of select_files() that the runs in folders used, each after its .json file. A CSV is used by a
+    run if its SHA-256 is the forcing_csv_sha256 of the run hash inputs. The melt maps are left out. A run with no
+    local forcing CSV (or no forcing_csv_sha256) gives a warning: it is copied without its forcing CSV."""
+    used: Dict[str, List[str]] = {}  # SHA-256: the runs that used it
+    for folder in folders:
+        rel = os.path.relpath(folder, runs_root())
+        try:
+            manifest = read_manifest(folder)
+        except (OSError, ValueError) as error:
+            manifest = None
+            print(f"WARNING: the manifest of {rel} cannot be read ({error}).", file=sys.stderr)
+        inputs = manifest.get("hash_inputs") if isinstance(manifest, dict) else None
+        sha = inputs.get("forcing_csv_sha256") if isinstance(inputs, dict) else None
+        used.setdefault(sha or "", []).append(rel)
+    chosen: List[RunSync] = []
+    found = set()
+    for csv in items:
+        if csv.json_of is None and csv.rel.startswith("forcing" + os.sep):
+            sha = _csv_sha256(csv)
+            if sha and sha in used:
+                chosen += ([csv.requires] if csv.requires is not None else []) + [csv]
+                found.add(sha)
+    for rel in sorted(rel for sha, rels in used.items() if sha not in found for rel in rels):
+        print(f"WARNING: no readable local forcing CSV for {rel}; the run is copied without one.", file=sys.stderr)
+    return chosen
+
+
 def same_forcing_json(local: str, share: str) -> bool:
     """Whether two forcing JSON files describe the same CSV: both parse, and have the same csv_sha256. The other keys
     (created, host, requested_location) are metadata of the fetch, so two VMs that fetch the same forcing differ."""
@@ -591,6 +662,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--apply", action="store_true", help="copy the runs and write the log")
     parser.add_argument("--on-differ", choices=[ASK, KEEP, REPLACE, SKIP], default=ASK,
                         help="one decision for all the DIFFER runs (default: ask)")
+    parser.add_argument("--runs", action="append", metavar="PATTERN",
+                        help="only the runs whose path relative to the run root matches PATTERN (fnmatch), and their "
+                             "forcing CSVs; no melt map. Can be given more than once")
     args = parser.parse_args(argv)
 
     share = share_data_path()
@@ -603,6 +677,12 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     folders = select_local_runs()
     print(f"{len(folders)} complete local runs in {runs_root()}")
+    if args.runs:
+        folders = match_runs(folders, args.runs)
+        print(f"{len(folders)} of them match --runs {' '.join(args.runs)}")
+        if not folders:
+            print("ERROR: --runs selects no complete local run. Nothing is done.", file=sys.stderr)
+            return 1
     runs: List[RunSync] = []
     for number, folder in enumerate(folders, 1):
         rel = os.path.relpath(folder, runs_root())
@@ -619,6 +699,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     failed = False
     try:
         files = select_files()
+        if args.runs:
+            files = files_of_runs(files, folders)
     except OSError as error:  # for example an unreadable forcing folder; the runs go on
         print(f"ERROR: the forcing and melt files cannot be listed ({error}); they are not copied.", file=sys.stderr)
         files, failed = [], True
