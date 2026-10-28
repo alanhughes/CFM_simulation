@@ -30,9 +30,12 @@ REFERENCE_RUN = SPEERSM / "cfm_output" / "CFMoutput_-66.403_-63.376_1979_2024_GS
 REFERENCE_CSV = SPEERSM / "cfm_input" / "RACMO_-66.403_-63.376_1979_2024.csv"
 OLD_CELL = (261, 125)
 
-pytestmark = pytest.mark.skipif(
-    os.environ.get("CFM_REFERENCE_TEST") != "1", reason="a 7 minute CFM run; set CFM_REFERENCE_TEST=1"
-)
+pytestmark = [
+    pytest.mark.skipif(
+        os.environ.get("CFM_REFERENCE_TEST") != "1", reason="a 7 minute CFM run; set CFM_REFERENCE_TEST=1"
+    ),
+    pytest.mark.real_config,  # the real data, not the test config of tests/conftest.py
+]
 
 
 def load_compare():
@@ -51,9 +54,10 @@ def test_reference_run_is_bit_for_bit(tmp_path):
             pytest.skip(f"{path} is not available")
     version = cfm_version(LABEL)
 
-    # a config.yaml for a CFM_data_path in tmp_path, with the years of the speersm runs
+    # a config.yaml for a CFM_data_path in tmp_path, with no share and the years of the speersm runs
     text = (REPO / "config.yaml").read_text()
     text = re.sub(r"(?m)^CFM_data_path:.*$", f"CFM_data_path: {tmp_path / 'data'}", text)
+    text = re.sub(r"(?m)^CFM_share_data_path:.*$", "", text)
     text = re.sub(r"(?m)^forcing_data_path:.*$", "", text)
     text = re.sub(r"(?m)^start_year:.*$", "start_year: 1979", text)
     text = re.sub(r"(?m)^end_year:.*$", "end_year: 2024", text)

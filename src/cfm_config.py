@@ -1,10 +1,15 @@
 """Loads config.yaml, expanding "{cpom_mount}" in top level path values so the luna mount point is set in one place.
+The optional CFM_share_data_path (FEAT-008) is read with share_data_path(). share_available() checks it once per
+process, and find_on_share() finds a file there.
 
 Also loads the site table, sites.yaml (FEAT-002), with sites(), get_site() and batches().
 """
 
 import calendar
 import datetime
+import logging
+import os
+import stat
 import sys
 import warnings
 from dataclasses import dataclass, field
@@ -18,14 +23,89 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SITES_FILE = REPO_ROOT / "sites.yaml"
 SITES_LOCK_FILE = REPO_ROOT / "sites.lock"
 
-with open("config.yaml", "r") as file:
-    config = yaml.safe_load(file)
 
-# only expand {cpom_mount} - other placeholders (e.g. {CFM_data_path} in forcing_data_path) are filled in where
-# they're used
-for key, value in config.items():
-    if isinstance(value, str):
-        config[key] = value.replace("{cpom_mount}", config["cpom_mount"])
+def expand_cpom_mount(cfg: dict) -> dict:
+    """Replace "{cpom_mount}" in the top level string values of cfg, in place, and return cfg.
+
+    Only {cpom_mount} is expanded: other placeholders (e.g. {CFM_data_path} in forcing_data_path) are filled in where
+    they're used. An optional path key, such as CFM_share_data_path, is expanded only if it is in cfg.
+    """
+    for key, value in cfg.items():
+        if isinstance(value, str):
+            cfg[key] = value.replace("{cpom_mount}", cfg["cpom_mount"])
+    return cfg
+
+
+with open("config.yaml", "r") as file:
+    config = expand_cpom_mount(yaml.safe_load(file))
+
+
+def share_data_path(cfg: dict | None = None) -> str | None:
+    """CFM_share_data_path, the folder on the share with a copy of the runs (FEAT-008), or None if it is not set.
+
+    The key is optional: a config.yaml without it, or with an empty value, uses CFM_data_path only, as before FEAT-008.
+    cfg is config if None.
+    """
+    value = (config if cfg is None else cfg).get("CFM_share_data_path")
+    return value or None
+
+
+_share_checks: Dict[Optional[str], bool] = {}
+
+
+def share_available() -> bool:
+    """Whether the share folder (share_data_path()) is a folder that can be read. Checked one time in each process
+    for each value of share_data_path().
+
+    False if CFM_share_data_path is not set. The share has the mount option soft, so a share that is not available
+    gives a timeout for each file check. If the check gives an OSError, write one warning and give False: the readers
+    of the forcing CSVs and the melt maps then use the local files only.
+    """
+    share = share_data_path()
+    if share not in _share_checks:
+        _share_checks[share] = _check_share(share)
+    return _share_checks[share]
+
+
+def _check_share(share: str | None) -> bool:
+    if share is None:
+        return False
+    try:
+        # os.stat, not os.path.isdir, which hides the OSError of a share that is not available
+        return stat.S_ISDIR(os.stat(share).st_mode)
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+    except OSError as error:
+        logging.warning(f"The share {share} is not available ({error}). Using the local files only in this process.")
+        return False
+
+
+def find_on_share(local: str, share: str) -> str:
+    """The path to read a file that is local, with a copy at the path share: local if it exists, else share if the
+    share is available and has the file, else local (the caller then gives its usual error).
+
+    os.stat, not os.path.exists, which hides the OSError. If the share file gives an OSError (other than not found),
+    write one warning and set share_available() to False for the process, so that no later call waits for a timeout.
+    """
+    if os.path.exists(local) or not share_available():
+        return local
+    try:
+        os.stat(share)
+        return share
+    except (FileNotFoundError, NotADirectoryError):
+        return local
+    except OSError as error:
+        logging.warning(
+            f"The share file {share} is not available ({error}). Using the local files only in this process."
+        )
+        _share_checks[share_data_path()] = False
+        return local
+
+
+def reset_share_available() -> None:
+    """Forget the result of share_available(), so that the next call checks the share again."""
+    _share_checks.clear()
+
 
 # keys that were removed from config.yaml (FEAT-002), and where they went. An old config.yaml with one of these keys
 # stops here, so that it is not used by mistake.

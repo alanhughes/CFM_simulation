@@ -3,9 +3,18 @@ import xarray as xr
 import logging
 from typing import Dict, Literal, Optional, Tuple
 
-from cfm_config import config
+from cfm_config import config, find_on_share, share_data_path
 
 logging.basicConfig(level=logging.INFO)
+
+
+def melt_map_path(rcm_name: str) -> str:
+    """Path of the average yearly melt map for a read: the local file if it exists, else the copy in
+    {CFM_share_data_path}/melt/ if it exists, else the local path (FEAT-008)."""
+    name = f"{rcm_name}_avg_yearly_melt_map_{config['start_year']}-{config['end_year']}.nc"
+    local = f"{config['CFM_data_path']}/melt/{name}"
+    share = share_data_path()
+    return local if share is None else find_on_share(local, f"{share}/melt/{name}")
 
 
 def plot_larsen_c_melt(
@@ -25,9 +34,7 @@ def plot_larsen_c_melt(
         labels (Dict[str, str], optional): legend label for each site, for example its model point. Default: the name.
     """
 
-    melt_ds = xr.open_dataarray(
-        f"{config['CFM_data_path']}/melt/{rcm_name}_avg_yearly_melt_map_{config['start_year']}-{config['end_year']}.nc"
-    )
+    melt_ds = xr.open_dataarray(melt_map_path(rcm_name))
 
     # restrict to larsenC_box
     melt_ds = melt_ds.where(

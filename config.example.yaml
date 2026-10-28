@@ -29,6 +29,7 @@ default_cfm_version: ab871c8
 
 # Where all output goes (forcing CSVs, CFM results, figures): a local folder, or your own <username>/ folder on the share. Never under archive/.
 CFM_data_path: /path/to/CFM_data
+CFM_share_data_path: "{cpom_mount}/<username>/CFM_data"   # optional: a copy of the runs on the share (FEAT-008)
 
 # Raw RCM NetCDF forcing data, read from the luna share. These defaults should work once cpom_mount is set.
 MAR_data_path: "{cpom_mount}/briggsk/RCM_data/Data/MAR/AIS/27.5km" # MAR forcing data

@@ -13,7 +13,7 @@ from typing import Literal
 
 from cfm_config import config
 from cfm_config import cfm_version as lookup_cfm_version
-from force.cache import forcing_csv_path, forcing_json_path, sha256_file
+from force.cache import find_forcing_csv, forcing_json_path, sha256_file
 from force.model_point import ModelPoint, model_point_at
 from sim.identity import check_cfm_identity, check_wrapper_identity, measure_cfm_identity, wrapper_identity
 from sim.manifest import (
@@ -28,6 +28,9 @@ from sim.manifest import (
     run_hash,
     run_code_drift,
     run_hash_inputs,
+    run_roots,
+    runs_root,
+    share_runs_root,
     write_manifest,
 )
 
@@ -209,7 +212,7 @@ class CFMRun:
 
         # the forcing CSV must exist before the folder is made, so a missing CSV leaves nothing behind (BUG-004)
         self._model_point = model_point_at(self._borehole_lat, self._borehole_lon, self._rcm_name)
-        self._force_data_path = forcing_csv_path(self._model_point)
+        self._force_data_path = find_forcing_csv(self._model_point)
         forcing_sha256 = self._forcing_sha256()
 
         self._hash_inputs = run_hash_inputs(
@@ -239,10 +242,12 @@ class CFMRun:
 
         Only a "complete" manifest with the same run hash is skipped (BUG-004). A manifest with a different hash is an
         error, also with --force: it is a different run (hash8 is the same by chance), or a folder that was copied.
+
+        If results_folder does not exist, the run can be on the share (FEAT-008): see _should_run_on_share.
         """
 
         if not os.path.exists(results_folder):
-            return True
+            return self._should_run_on_share(results_folder)
 
         manifest = read_manifest(results_folder)
 
@@ -287,14 +292,62 @@ class CFMRun:
         logging.warning(f"{results_folder} has status {status} ({manifest.get('error')}). Rerunning.")
         return True
 
-    def _add_site(self, results_folder: str, manifest: dict) -> None:
+    def _should_run_on_share(self, results_folder: str) -> bool:
+        """Whether to run the CFM, for a run with no local folder, from the manifest (if any) of the folder with the
+        same relative path on the share (FEAT-008).
+
+        A "complete" share run with the same run hash is skipped, and this site is added to its manifest on the share.
+        A share manifest with a different hash is an error, as for a local folder. Each other case runs the CFM in the
+        local folder, and the share copy does not change: --force, a share run that is not complete, no share run, or
+        a share that is not available (run_roots checks it once in each process). scripts/sync_runs.py compares the
+        two copies later.
+        """
+        share = share_runs_root()
+        if share is None or share not in run_roots():
+            return True
+        share_folder = os.path.join(share, os.path.relpath(results_folder, runs_root()))
+        try:
+            manifest = read_manifest(share_folder)
+        except OSError as error:  # the share stopped after the check of run_roots
+            logging.warning(f"Cannot read the share run {share_folder} ({error}). Running in {results_folder}.")
+            return True
+        if manifest is None:
+            return True
+
+        if manifest.get("run_hash") != self._run_hash:
+            raise RuntimeError(
+                f"{share_folder} contains the run {manifest.get('run_hash')}, not {self._run_hash}. "
+                "Move that folder, and do the run again."
+            )
+        if self._force:
+            logging.info(f"--force: running in {results_folder}. The share copy at {share_folder} does not change.")
+            return True
+        if manifest.get("status") == COMPLETE:
+            logging.info(f"Complete run found on the share at {share_folder}, skipping. Use --force to rerun.")
+            self._add_site(share_folder, manifest, on_share=True)
+            return False
+        logging.info(f"{share_folder} has status {manifest.get('status')}. Running in {results_folder}.")
+        return True
+
+    def _add_site(self, results_folder: str, manifest: dict, on_share: bool = False) -> None:
         """Add this site and its coordinates to the sites of a complete run. Two sites in one grid cell share a run
-        (FEAT-002)."""
+        (FEAT-002).
+
+        results_folder is the folder that _should_run found: the local folder, or the share folder if the run is on the
+        share only (FEAT-008). If the write to the share fails, this gives a warning and continues: the run is
+        complete, and write_manifest does not damage the manifest. Only the sites of the share copy are not updated.
+        """
         sites = manifest["run"].setdefault("sites", [])
         if self._site is not None and self._site not in sites:
             sites.append(self._site)
             manifest["run"].setdefault("site_coords", {})[self._site] = [self._borehole_lat, self._borehole_lon]
-            write_manifest(results_folder, manifest)
+            try:
+                write_manifest(results_folder, manifest)
+            except OSError as error:
+                if not on_share:
+                    raise
+                logging.warning(f"Cannot add site {self._site} to the sites of {results_folder} ({error}).")
+                return
             logging.info(f"Added site {self._site} to the sites of {results_folder}: {', '.join(sites)}.")
 
     def _forcing_sha256(self) -> str:

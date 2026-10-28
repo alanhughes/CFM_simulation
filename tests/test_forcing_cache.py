@@ -1,7 +1,9 @@
 """Tests for the forcing cache path, its JSON file and the date check (FEAT-002, BUG-003). No luna data is read."""
 
+import errno
 import hashlib
 import json
+import logging
 import os
 
 import numpy as np
@@ -9,8 +11,15 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from cfm_config import config
-from force.cache import ForcingCoverageError, check_date_coverage, forcing_csv_path, forcing_json_path, forcing_root
+from cfm_config import config, share_available
+from force.cache import (
+    ForcingCoverageError,
+    check_date_coverage,
+    find_forcing_csv,
+    forcing_csv_path,
+    forcing_json_path,
+    forcing_root,
+)
 from force.extract import process_fast
 from force.model_point import ModelPoint, clear_cache
 from force.process import ProcessBase
@@ -203,3 +212,176 @@ def test_cell_check(fake_rcm):
     mp = process.model_point
     with pytest.raises(ValueError, match="do not use one grid"):
         process._check_cell(mp.i + 1, mp.j)
+
+
+# FEAT-008: find_forcing_csv reads the share copy when the CSV is not local
+
+
+@pytest.fixture
+def share_cache(tmp_path, monkeypatch):
+    """A local and a share forcing cache in tmp_path, not made. Returns (local csv path, share csv path)."""
+    monkeypatch.setitem(config, "CFM_data_path", str(tmp_path / "local"))
+    monkeypatch.setitem(config, "forcing_data_path", str(tmp_path / "local" / "forcing"))
+    monkeypatch.setitem(config, "CFM_share_data_path", str(tmp_path / "share"))
+    local = forcing_csv_path(_mp(), 1979, 2024)
+    share = str(tmp_path / "share" / "forcing" / "RACMO23" / RELEASE / "147_169_1979_2024.csv")
+    return local, share
+
+
+def _touch(path):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    open(path, "w").close()
+
+
+def test_find_forcing_csv_local(share_cache):
+    local, share = share_cache
+    _touch(local)
+    _touch(share)
+    assert find_forcing_csv(_mp(), 1979, 2024) == local
+
+
+def test_find_forcing_csv_share_only(share_cache):
+    local, share = share_cache
+    _touch(share)
+    assert find_forcing_csv(_mp(), 1979, 2024) == share
+    # the path of a write stays local
+    assert forcing_csv_path(_mp(), 1979, 2024) == local
+
+
+def test_find_forcing_csv_neither(share_cache):
+    local, share = share_cache
+    os.makedirs(os.path.dirname(share))
+    assert find_forcing_csv(_mp(), 1979, 2024) == local
+
+
+def test_find_forcing_csv_share_not_set(share_cache, monkeypatch):
+    local, share = share_cache
+    _touch(share)
+    monkeypatch.delitem(config, "CFM_share_data_path")
+    assert find_forcing_csv(_mp(), 1979, 2024) == local
+
+
+@pytest.fixture
+def share_stats(monkeypatch):
+    """Count the os.stat calls for paths under the share. Set .fail to a folder prefix to make those calls give EIO."""
+
+    class Stats:
+        calls: list = []
+        prefix: str = ""
+        fail: bool = False
+
+    stats = Stats()
+    stats.calls = []
+    real_stat = os.stat
+
+    def counting_stat(path, *args, **kwargs):
+        if stats.prefix and str(path).startswith(stats.prefix):
+            stats.calls.append(str(path))
+            if stats.fail:
+                raise OSError(errno.EIO, "Input/output error")
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", counting_stat)
+    return stats
+
+
+def _warnings(caplog):
+    return [r for r in caplog.records if r.levelno == logging.WARNING and "not available" in r.message]
+
+
+def test_find_forcing_csv_share_not_available(share_cache, share_stats, caplog):
+    local, share = share_cache
+    _touch(share)
+    share_stats.prefix, share_stats.fail = str(config["CFM_share_data_path"]), True
+    with caplog.at_level(logging.WARNING):
+        for _ in range(3):
+            assert find_forcing_csv(_mp(), 1979, 2024) == local
+    assert len(_warnings(caplog)) == 1
+    assert len(share_stats.calls) == 1  # the share folder, one time
+    assert not share_available()
+    # a local CSV is still found while the share is down
+    _touch(local)
+    assert find_forcing_csv(_mp(), 1979, 2024) == local
+    assert len(share_stats.calls) == 1
+
+
+def test_find_forcing_csv_share_file_fails_later(share_cache, share_stats, caplog):
+    local, share = share_cache
+    _touch(share)
+    share_stats.prefix = str(config["CFM_share_data_path"])
+    assert share_available()
+    assert len(share_stats.calls) == 1
+    share_stats.fail = True
+    # the share folder was found, then the share file gives an error
+    with caplog.at_level(logging.WARNING):
+        for _ in range(3):
+            assert find_forcing_csv(_mp(), 1979, 2024) == local
+    assert len(_warnings(caplog)) == 1
+    assert len(share_stats.calls) == 2  # no probe after the error
+    assert not share_available()
+
+
+def test_find_forcing_csv_forcing_data_path_outside_data_path(share_cache, tmp_path, monkeypatch):
+    """The share path is relative to forcing_root(), whatever its value."""
+    monkeypatch.setitem(config, "forcing_data_path", str(tmp_path / "elsewhere" / "cache"))
+    local = forcing_csv_path(_mp(), 1979, 2024)
+    assert local.startswith(str(tmp_path / "elsewhere" / "cache"))
+    share = str(tmp_path / "share" / "forcing" / "RACMO23" / RELEASE / "147_169_1979_2024.csv")
+    _touch(share)
+    assert find_forcing_csv(_mp(), 1979, 2024) == share
+
+
+def test_process_fast_csv_only_on_share(fake_rcm, monkeypatch):
+    """A CSV that is only on the share is checked and is not extracted again (FEAT-008)."""
+    import force.extract
+
+    process = FakeProcess(-66.403, -63.376)
+    process.save_forcing(process._save_path, _forcing([1979, 1980, 1981]), [])
+    local = process._save_path
+    share = fake_rcm / "share" / "forcing" / os.path.relpath(local, forcing_root())
+    os.makedirs(os.path.dirname(share))
+    for path in (local, forcing_json_path(local)):
+        os.replace(path, os.path.join(os.path.dirname(share), os.path.basename(path)))
+    monkeypatch.setitem(config, "CFM_share_data_path", str(fake_rcm / "share"))
+
+    def no_extraction(*args, **kwargs):
+        raise AssertionError("the forcing was extracted again")
+
+    checked = []
+    real_check = ProcessBase._check_existing
+
+    def recording_check(path, *args):
+        checked.append(path)
+        return real_check(path, *args)
+
+    monkeypatch.setattr(force.extract, "list_files", no_extraction)
+    monkeypatch.setattr(force.extract, "forcing_for_cells", no_extraction)
+    monkeypatch.setattr(FakeProcess, "_check_existing", staticmethod(recording_check))
+    assert process_fast([process]) == []
+    assert checked == [str(share)]
+    assert not os.path.exists(local)
+
+    # a share CSV with a bad date range stops with ForcingCoverageError
+    share_json = forcing_json_path(str(share))
+    with open(share_json) as file:
+        record = json.load(file)
+    with open(share_json, "w") as file:
+        json.dump({**record, "last_date": "1980-12-31"}, file)
+    with pytest.raises(ForcingCoverageError, match="1981"):
+        process_fast([process])
+    with open(share_json, "w") as file:
+        json.dump(record, file)
+
+    # with overwrite the CSV is extracted again and written to the local path; the share CSV does not change
+    share_bytes = share.read_bytes()
+    mp = process.model_point
+    monkeypatch.setattr(force.extract, "list_files", lambda settings: {"2000": ["a.nc"]})
+    monkeypatch.setattr(force.extract, "read_grid", lambda path, spec: _grid())
+    monkeypatch.setattr(
+        force.extract,
+        "forcing_for_cells",
+        lambda *args, **kwargs: ({(mp.i, mp.j): _forcing([1979, 1980, 1981])}, ["a.nc"]),
+    )
+    assert process_fast([process], overwrite=True, use_cache=False, cache_sites=[]) == [local]
+    assert os.path.exists(local)
+    assert share.read_bytes() == share_bytes

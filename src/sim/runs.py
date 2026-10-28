@@ -11,6 +11,10 @@ that is not in sites.yaml, gives a warning: once for each run folder and site in
 returned. The run hash does not contain the site, so the results are correct for the model point; the warning is about
 the provenance of the site name (DISC-002).
 
+With CFM_share_data_path (FEAT-008), find_runs() reads the runs in each root of sim.manifest.run_roots(): the local
+runs, and the copy of the runs on the share. A run that agrees with the filters in the two roots is returned once, as
+the local copy with location "both". Run.folder, and each path made from it, is the folder of the copy returned.
+
 index.csv is only an export of runs_table() for the user, made on request (scripts/find_runs.py --index). The code
 never reads it, so it cannot be out of date for a query.
 
@@ -23,17 +27,22 @@ import argparse
 import glob
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Dict, List, Optional, Set, Tuple, Union
 
 import pandas as pd
 
 from cfm_config import config, format_coord, sites as site_table
 from force.grid import great_circle_km
-from sim.manifest import COMPLETE, MANIFEST_NAME, read_manifest, runs_root
+from sim.manifest import COMPLETE, MANIFEST_NAME, read_manifest, run_roots, runs_root, share_runs_root
 
 # the (run folder, site) pairs that had a site warning in this process, so that each pair gives one warning only
 _warned_sites: Set[Tuple[str, str]] = set()
+
+# the values of Run.location (FEAT-008)
+LOCAL = "local"
+SHARE = "share"
+BOTH = "both"
 
 # the meltwater solver of a run whose cfm_config has no meltwater_solver key: the default of the CFM
 DEFAULT_MELTWATER_SOLVER = "enthalpy"
@@ -41,10 +50,16 @@ DEFAULT_MELTWATER_SOLVER = "enthalpy"
 
 @dataclass(frozen=True)
 class Run:
-    """One run folder and its manifest."""
+    """One run folder and its manifest.
+
+    location is where the run is (FEAT-008): LOCAL (in runs_root()), SHARE (in share_runs_root() only) or BOTH (in
+    the two roots). folder is the local copy if there is one, else the share copy. Each path of the run is made from
+    folder.
+    """
 
     folder: str
     manifest: dict
+    location: str = LOCAL
 
     @property
     def run_hash(self) -> str:
@@ -152,6 +167,7 @@ class Run:
             "sites": ",".join(self.sites),
             "started": self.manifest.get("started", ""),
             "finished": self.finished,
+            "location": self.location,
             "folder": self.folder,
         }
 
@@ -185,8 +201,68 @@ def find_runs(
     manifest: a run with no spin_end_year (a migrated-1 run, FEAT-004) never agrees with it. cfm is a label in
     cfm_versions. run_hash can be the first characters of the hash. status is "complete" by default; None gives all the
     runs.
+
+    root is one run root. If None, the runs in each root of run_roots() (FEAT-008), sorted by folder: the local runs,
+    and the share runs. A run hash that agrees with the filters in the two roots gives the local run only, with
+    location BOTH. A run that agrees in the share root only (for example, its local copy is not complete) gives the
+    share run.
     """
-    root = root or runs_root()
+    filters = dict(
+        site=site,
+        model_point=model_point,
+        rcm_name=rcm_name,
+        physRho=physRho,
+        liquid=liquid,
+        meltwater_solver=meltwater_solver,
+        start_year=start_year,
+        end_year=end_year,
+        spin_end_year=spin_end_year,
+        cfm=cfm,
+        run_hash=run_hash,
+        status=status,
+    )
+    site_tags: dict = {}  # model point of the site, for each RCM, for all the roots
+    if root:
+        runs = _find_in_root(root, SHARE if root == share_runs_root() else LOCAL, site_tags, **filters)
+    else:
+        runs = []
+        local = {}  # the index in runs of each local run hash
+        for one_root in run_roots():
+            if one_root == runs_root():
+                found = _find_in_root(one_root, LOCAL, site_tags, **filters)
+                local.update((run.run_hash, len(runs) + i) for i, run in enumerate(found))
+                runs.extend(found)
+                continue
+            for run in _find_in_root(one_root, SHARE, site_tags, **filters):
+                if run.run_hash in local:
+                    runs[local[run.run_hash]] = replace(runs[local[run.run_hash]], location=BOTH)
+                else:
+                    runs.append(run)
+        runs.sort(key=lambda run: run.folder)
+    if runs:
+        _check_sites(runs)
+    return runs
+
+
+def _find_in_root(
+    root: str,
+    location: str,
+    site_tags: dict,
+    site: Optional[str],
+    model_point: Optional[str],
+    rcm_name: Optional[str],
+    physRho: Optional[str],
+    liquid: Optional[str],
+    meltwater_solver: Optional[str],
+    start_year: Optional[int],
+    end_year: Optional[int],
+    spin_end_year: Optional[int],
+    cfm: Optional[str],
+    run_hash: Optional[str],
+    status: Optional[str],
+) -> List[Run]:
+    """The runs in one run root that agree with the filters of find_runs, sorted by folder, with this location.
+    site_tags is the model point of the site for each RCM, filled in as the RCMs are found."""
     if model_point is not None:
         pattern = os.path.join(root, model_point, "*", "*", "*", MANIFEST_NAME)
     elif rcm_name is not None:
@@ -194,7 +270,6 @@ def find_runs(
     else:
         pattern = os.path.join(root, "*", "*", "*", "*", MANIFEST_NAME)
 
-    site_tags: dict = {}  # model point of the site, for each RCM
     runs = []
     for path in sorted(glob.glob(pattern)):
         folder = os.path.dirname(path)
@@ -202,7 +277,7 @@ def find_runs(
         if not manifest or "run_hash" not in manifest:
             logging.warning(f"{folder} has no run hash in its manifest. It is not a run of sim.run, so it is ignored.")
             continue
-        run = Run(folder, manifest)
+        run = Run(folder, manifest, location)
         if status is not None and run.status != status:
             continue
         if model_point is not None and run.model_point != model_point:
@@ -228,8 +303,6 @@ def find_runs(
         if run_hash is not None and not run.run_hash.startswith(run_hash):
             continue
         runs.append(run)
-    if runs:
-        _check_sites(runs)
     return runs
 
 
@@ -285,9 +358,8 @@ def find_run(**filters) -> Run:
             if spin is not None
             else ""
         )
-        raise LookupError(
-            f"No run with {given} in {filters.get('root') or runs_root()}.{hint} Run scripts/run_cfm.py first."
-        )
+        roots = filters.get("root") or " or ".join(run_roots()) or runs_root()
+        raise LookupError(f"No run with {given} in {roots}.{hint} Run scripts/run_cfm.py first.")
     runs.sort(key=lambda run: run.finished)
     if len(runs) > 1:
         def describe(run):
@@ -351,6 +423,7 @@ ROW_KEYS = (
     "sites",
     "started",
     "finished",
+    "location",
     "folder",
 )
 

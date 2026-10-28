@@ -5,22 +5,54 @@ Usage:
     python scripts/find_runs.py --site CI-0 --physrho GSFC2020 --cfm ab871c8
     python scripts/find_runs.py --cfm 3e3bf7e-speersm --spin-end-year 1995   # the runs of one spin-up (FEAT-004)
     python scripts/find_runs.py --status all                      # also the running and failed runs
-    python scripts/find_runs.py --index                           # also write {CFM_data_path}/index.csv
+    python scripts/find_runs.py --index                           # also write index.csv in {CFM_share_data_path}, or in {CFM_data_path}
     python scripts/find_runs.py --index runs.parquet              # the same table as parquet (needs pyarrow)
 
-The index is a CSV export of the table for the user. The code does not read it.
+The index is a CSV export of the table for the user. The code does not read it. The column location is "local",
+"share" or "both" (FEAT-008). --index with no file name writes index.csv in {CFM_share_data_path} if it is set, else in
+{CFM_data_path}. The script writes the table to <file>.tmp in the same folder, then renames it to <file>, so a write
+that stops leaves the old index. If CFM_share_data_path is set and the share is not available, --index writes nothing
+and the exit code is 1 (the index would not have the share runs). This is checked before the query. The exit code is
+also 1 for a file name that is not .csv or .parquet, for a .parquet file name without pyarrow, for a write that
+fails, and for an OSError of the query (for example, the share stops during the query).
 """
 
 import argparse
 import os
 import sys
+from typing import List, Optional
 
 import pandas as pd
 
-from cfm_config import config
+from cfm_config import config, share_available, share_data_path
 from sim.runs import find_runs, runs_table
 
-if __name__ == "__main__":
+
+def default_index_path() -> str:
+    """index.csv in CFM_share_data_path if it is set, else in CFM_data_path."""
+    return os.path.join(share_data_path() or config["CFM_data_path"], "index.csv")
+
+
+def write_index(table: pd.DataFrame, path: str) -> None:
+    """Write the table to <path>.tmp, fsync it, and rename it to path. The old file stays if the write stops."""
+    tmp = f"{path}.tmp"
+    try:
+        if path.endswith(".parquet"):
+            table.to_parquet(tmp, index=False)
+        else:
+            table.to_csv(tmp, index=False)
+        with open(tmp, "rb") as file:
+            os.fsync(file.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="List the CFM runs that agree with the filters")
     parser.add_argument("--site", help="Site name in sites.yaml (the runs of its model point)")
     parser.add_argument("--model-point", help="ModelPoint.tag, for example RACMO_261_126")
@@ -37,39 +69,63 @@ if __name__ == "__main__":
     parser.add_argument(
         "--index",
         nargs="?",
-        const=os.path.join(config["CFM_data_path"], "index.csv"),
-        help="Write the table to this .csv (default: {CFM_data_path}/index.csv) or .parquet file",
+        const="",  # no file name: default_index_path()
+        help="Write the table to this .csv or .parquet file (default: index.csv in {CFM_share_data_path} if set, "
+        "else in {CFM_data_path})",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
-    runs = find_runs(
-        site=args.site,
-        model_point=args.model_point,
-        rcm_name=args.rcm,
-        physRho=args.physrho,
-        liquid=args.liquid,
-        meltwater_solver=args.meltwater_solver,
-        start_year=args.start_year,
-        end_year=args.end_year,
-        spin_end_year=args.spin_end_year,
-        cfm=args.cfm,
-        run_hash=args.hash,
-        status=None if args.status == "all" else args.status,
-    )
+    index = default_index_path() if args.index == "" else args.index
+    if index:
+        if not index.endswith((".csv", ".parquet")):
+            print(f"Cannot write {index}: give a .csv or .parquet file name.", file=sys.stderr)
+            return 1
+        if index.endswith(".parquet"):
+            try:
+                import pyarrow  # noqa: F401
+            except ImportError:
+                print(f"Cannot write {index}: pyarrow is not installed. Use a .csv file name.", file=sys.stderr)
+                return 1
+        if share_data_path() and not share_available():
+            print(
+                f"ERROR: the share {share_data_path()} is not available, so the index would not have the share runs. "
+                "Nothing is written.",
+                file=sys.stderr,
+            )
+            return 1
+
+    try:
+        runs = find_runs(
+            site=args.site,
+            model_point=args.model_point,
+            rcm_name=args.rcm,
+            physRho=args.physrho,
+            liquid=args.liquid,
+            meltwater_solver=args.meltwater_solver,
+            start_year=args.start_year,
+            end_year=args.end_year,
+            spin_end_year=args.spin_end_year,
+            cfm=args.cfm,
+            run_hash=args.hash,
+            status=None if args.status == "all" else args.status,
+        )
+    except OSError as error:  # the share stopped after the check of run_roots() (FEAT-008)
+        print(f"ERROR: cannot read the runs ({error})", file=sys.stderr)
+        return 1
     table = runs_table(runs)
     with pd.option_context("display.max_rows", None, "display.width", 200, "display.max_colwidth", 40):
         print(table.drop(columns=["folder", "started"]).assign(run_hash=table["run_hash"].str[:8]).to_string(index=False))
     print(f"{len(table)} runs.")
 
-    if args.index:
-        if args.index.endswith(".parquet"):
-            try:
-                import pyarrow  # noqa: F401
-            except ImportError:
-                sys.exit(f"Cannot write {args.index}: pyarrow is not installed. Use a .csv file name.")
-            table.to_parquet(args.index, index=False)
-        elif args.index.endswith(".csv"):
-            table.to_csv(args.index, index=False)
-        else:
-            sys.exit(f"Cannot write {args.index}: give a .csv or .parquet file name.")
-        print(f"Wrote {args.index}.")
+    if index:
+        try:
+            write_index(table, index)
+        except Exception as error:
+            print(f"Cannot write {index}: {error}", file=sys.stderr)
+            return 1
+        print(f"Wrote {index}.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

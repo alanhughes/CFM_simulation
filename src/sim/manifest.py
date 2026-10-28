@@ -18,11 +18,13 @@ its first site only, in run.borehole_lat and run.borehole_lon.
 import glob
 import hashlib
 import json
+import logging
 import os
 import socket
+import stat
 from datetime import datetime, timezone
 
-from cfm_config import config
+from cfm_config import config, share_data_path
 
 MANIFEST_NAME = "manifest.json"
 
@@ -83,6 +85,57 @@ def runs_root() -> str:
     return os.path.join(config["CFM_data_path"], "runs")
 
 
+def share_runs_root() -> str | None:
+    """The root folder of the copy of the runs on the share, {CFM_share_data_path}/runs (FEAT-008), or None if
+    CFM_share_data_path is not set."""
+    share = share_data_path()
+    return None if share is None else os.path.join(share, "runs")
+
+
+# the result of the check of each share run root in this process (FEAT-008): True if it is a folder, False if it does
+# not exist or the share is not available. See run_roots()
+_share_root_checks: dict[str, bool] = {}
+
+
+def run_roots() -> list[str]:
+    """The run roots that exist, local first: [runs_root(), share_runs_root()] (FEAT-008).
+
+    A root that is not set or does not exist is left out. The share is mounted "soft": if it is not available, the
+    check of the share root raises OSError after a timeout, not an empty folder. Then this gives a warning and the
+    local root only.
+
+    The share root is checked once in each process, and the result is used again: a share that is not available
+    gives one timeout and one warning, not one for each call. reset_share_check() clears the result (for the tests).
+    """
+    roots = [runs_root()] if os.path.isdir(runs_root()) else []
+    share = share_runs_root()
+    if share is not None:
+        if share not in _share_root_checks:
+            _share_root_checks[share] = _is_share_root(share)
+        if _share_root_checks[share]:
+            roots.append(share)
+    return roots
+
+
+def _is_share_root(share: str) -> bool:
+    """Whether the share run root is a folder. False, with a warning, if the share is not available."""
+    try:
+        # os.stat, not os.path.isdir, which hides the OSError of a share that is not available
+        return stat.S_ISDIR(os.stat(share).st_mode)
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+    except OSError as error:
+        logging.warning(
+            f"The share run root {share} is not available ({error}). Using the local runs only in this process."
+        )
+        return False
+
+
+def reset_share_check() -> None:
+    """Forget the result of the check of the share root, so that the next run_roots() checks it again."""
+    _share_root_checks.clear()
+
+
 def run_folder(
     model_point_tag: str, phys_rho: str, liquid: str, start_year: int, end_year: int, cfm_label: str, hash_: str
 ) -> str:
@@ -102,12 +155,13 @@ def now() -> str:
 
 
 def read_manifest(folder: str) -> dict | None:
-    """Manifest of the run in folder, or None if the folder has no manifest."""
-    path = os.path.join(folder, MANIFEST_NAME)
-    if not os.path.exists(path):
+    """Manifest of the run in folder, or None if the folder has no manifest. Any other OSError is raised:
+    os.path.exists gives False for an OSError, so on the soft share mount an I/O error would look like no manifest."""
+    try:
+        with open(os.path.join(folder, MANIFEST_NAME)) as file:
+            return json.load(file)
+    except (FileNotFoundError, NotADirectoryError):
         return None
-    with open(path) as file:
-        return json.load(file)
 
 
 def write_manifest(folder: str, manifest: dict) -> None:
@@ -129,13 +183,19 @@ def run_code_drift(wrapper: dict, root: str | None = None) -> dict | None:
     question 3): after a change, the first run warns, and once a run of the new code is complete, the next runs do not.
     With all the runs of the version, a change that needs no new version would warn for ever.
 
-    This reads the manifests in runs/ as sim.runs.find_runs does, but without sim.runs, which a CFM run does not import
-    (RUN_CODE_EXCLUDED). It ignores the runs that are not complete, the migrated runs, as their wrapper code is not
-    known, and the manifests with no wrapper.run_code_version (hash_version 2, from before FEAT-005): their
-    run_code_sha256 includes src/sim/runs.py, so it cannot be compared. A manifest that cannot be read is ignored too.
+    This reads the manifests in root, or in each root of run_roots() if root is None, as sim.runs.find_runs does,
+    but without sim.runs, which a CFM run does not import (RUN_CODE_EXCLUDED). The last run is the last of all the
+    roots, the local root and the share (FEAT-008): after its local copy is removed, the last run is on the share
+    only. A share that is not available is left out (run_roots). It ignores the runs that are not complete, the
+    migrated runs, as their wrapper code is not known, and the manifests with no wrapper.run_code_version
+    (hash_version 2, from before FEAT-005): their run_code_sha256 includes src/sim/runs.py, so it cannot be compared.
+    A manifest that cannot be read is ignored too.
     """
+    roots = [root] if root else run_roots()
+    pattern = os.path.join("*", "*", "*", "*", MANIFEST_NAME)
+    paths = [path for one_root in roots for path in glob.glob(os.path.join(one_root, pattern))]
     last, last_key = None, None
-    for path in sorted(glob.glob(os.path.join(root or runs_root(), "*", "*", "*", "*", MANIFEST_NAME))):
+    for path in sorted(paths):
         try:
             manifest = read_manifest(os.path.dirname(path))
         except (OSError, ValueError):
