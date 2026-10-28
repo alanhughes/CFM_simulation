@@ -167,6 +167,7 @@ class Run:
             "sites": ",".join(self.sites),
             "started": self.manifest.get("started", ""),
             "finished": self.finished,
+            "location": self.location,
             "folder": self.folder,
         }
 
@@ -422,6 +423,7 @@ ROW_KEYS = (
     "sites",
     "started",
     "finished",
+    "location",
     "folder",
 )
 

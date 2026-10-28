@@ -138,7 +138,7 @@ Scripts find runs from their manifests, not from a folder name: `sim.runs.find_r
 
 ```bash
 python scripts/find_runs.py --site CI-0 --physrho GSFC2020     # table of complete runs
-python scripts/find_runs.py --status all --index               # all runs; also write {CFM_data_path}/index.csv
+python scripts/find_runs.py --status all --index               # all runs; also write index.csv (in {CFM_share_data_path} if set, else {CFM_data_path})
 python scripts/find_runs.py --cfm 3e3bf7e-speersm --spin-end-year 1995   # the runs of one spin-up
 python scripts/link_sites.py                                   # {CFM_data_path}/sites/<site>/<rcm> -> ../../runs/<model point>
 ```

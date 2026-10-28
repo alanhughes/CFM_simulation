@@ -10,8 +10,10 @@ read.
 import errno
 import importlib.util
 import os
+import sys
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 import sim.manifest
@@ -26,6 +28,12 @@ _spec = importlib.util.spec_from_file_location(
 )
 link_sites = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(link_sites)
+
+_spec = importlib.util.spec_from_file_location(
+    "find_runs_script", Path(__file__).resolve().parents[1] / "scripts" / "find_runs.py"
+)
+find_runs_script = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(find_runs_script)
 
 SITE_TAGS = {"CI-0": {"RACMO": "RACMO_261_126", "MAR": "MAR_1_2"}, "CI-0-twin": {"RACMO": "RACMO_261_126", "MAR": "MAR_9_9"}}
 
@@ -433,3 +441,108 @@ def test_share_not_available(share, runs, monkeypatch, caplog):
     monkeypatch.setattr(sim.manifest.os, "stat", real_stat)
     sim.manifest.reset_share_check()
     assert len(find_runs()) == 6
+
+
+def test_table_has_location(share, runs):
+    make_share_run(share, "RACMO_300_300", hash_="1" * 64)
+    make_share_run(share, "RACMO_261_126", physRho="Crocus", hash_="b" * 64)
+    table = runs_table(find_runs())
+    assert list(table.columns).index("location") == list(table.columns).index("folder") - 1
+    assert table.set_index("model_point")["location"]["RACMO_300_300"] == "share"
+    assert table.set_index("physRho")["location"]["Crocus"] == "both"
+    assert table.set_index("run_hash")["location"]["a" * 64] == "local"
+
+
+# the --index option of scripts/find_runs.py: the default path, a share that is not available, the safe write
+
+
+def local_index(tmp_path) -> Path:
+    return tmp_path / "index.csv"  # CFM_data_path of the runs fixture is tmp_path
+
+
+def test_default_index_without_share(runs, tmp_path, capsys):
+    assert find_runs_script.main(["--index"]) == 0
+    assert f"Wrote {local_index(tmp_path)}." in capsys.readouterr().out
+    table = pd.read_csv(local_index(tmp_path))
+    assert len(table) == 5 and set(table["location"]) == {"local"}
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_default_index_on_the_share(share, runs, tmp_path):
+    make_share_run(share, "RACMO_300_300", hash_="1" * 64)
+    assert find_runs_script.main(["--index"]) == 0
+    table = pd.read_csv(share / "index.csv")
+    assert len(table) == 6 and set(table["location"]) == {"local", "share"}
+    assert "RACMO_300_300" in set(table["model_point"])
+    assert not local_index(tmp_path).exists()
+    assert not list(share.glob("*.tmp"))
+
+
+def test_explicit_index_path(share, runs, tmp_path):
+    assert find_runs_script.main(["--index", str(tmp_path / "x.csv")]) == 0
+    assert len(pd.read_csv(tmp_path / "x.csv")) == 5
+    assert not (share / "index.csv").exists()
+
+
+def no_query(**filters):
+    raise AssertionError("the query must not start")
+
+
+def test_index_with_a_bad_extension(share, runs, tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(find_runs_script, "find_runs", no_query)
+    assert find_runs_script.main(["--index", str(tmp_path / "x.txt")]) == 1
+    assert ".csv or .parquet" in capsys.readouterr().err
+    assert not (tmp_path / "x.txt").exists() and not (tmp_path / "x.txt.tmp").exists()
+
+
+def test_index_stops_if_the_share_is_not_available(share, runs, tmp_path, monkeypatch, capsys):
+    real_stat = os.stat
+
+    def stat(path, *args, **kwargs):
+        if str(path).startswith(str(share)):
+            raise OSError(errno.EIO, "Input/output error", str(path))
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(sim.manifest.os, "stat", stat)  # the os module of cfm_config.share_available too
+    explicit = tmp_path / "x.csv"
+    with monkeypatch.context() as patch:
+        patch.setattr(find_runs_script, "find_runs", no_query)  # the check is before the query
+        for argv in (["--index"], ["--index", str(explicit)]):
+            assert find_runs_script.main(argv) == 1
+            assert "not available" in capsys.readouterr().err
+    # without --index, the query still gives the local runs
+    assert find_runs_script.main([]) == 0
+    assert "5 runs." in capsys.readouterr().out
+    monkeypatch.setattr(sim.manifest.os, "stat", real_stat)
+    assert not (share / "index.csv").exists() and not local_index(tmp_path).exists() and not explicit.exists()
+
+
+def test_failed_write_keeps_the_old_index(runs, tmp_path, monkeypatch, capsys):
+    path = local_index(tmp_path)
+    path.write_text("old\n")
+
+    def replace(src, dst):
+        raise OSError(errno.EIO, "Input/output error", dst)
+
+    monkeypatch.setattr(find_runs_script.os, "replace", replace)
+    assert find_runs_script.main(["--index"]) == 1
+    assert "Cannot write" in capsys.readouterr().err
+    assert path.read_text() == "old\n"
+    assert not (tmp_path / "index.csv.tmp").exists()
+
+
+def test_parquet_without_pyarrow(runs, tmp_path, monkeypatch, capsys):
+    monkeypatch.setitem(sys.modules, "pyarrow", None)  # import pyarrow raises ImportError
+    monkeypatch.setattr(find_runs_script, "find_runs", no_query)
+    assert find_runs_script.main(["--index", str(tmp_path / "x.parquet")]) == 1
+    assert "pyarrow is not installed" in capsys.readouterr().err
+    assert not list(tmp_path.glob("x.parquet*"))
+
+
+def test_share_that_stops_during_the_query(runs, monkeypatch, capsys):
+    def stops(**filters):
+        raise OSError(errno.EIO, "Input/output error")
+
+    monkeypatch.setattr(find_runs_script, "find_runs", stops)
+    assert find_runs_script.main([]) == 1
+    assert "cannot read the runs" in capsys.readouterr().err
