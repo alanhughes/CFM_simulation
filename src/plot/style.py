@@ -34,6 +34,16 @@ BUDGET_COLOURS = {
     "runoff": "#e34948",
 }
 
+# colours of the forcings, for figures that compare the forcing of one scheme (Figure 10): slots 6-8 of the palette,
+# not the scheme colours, so a forcing is never read as a scheme. MAR is also dashed (the RCM pair), which separates it
+# from the other two for readers with colour-vision deficiency (red and green: CVD Delta E about 7).
+FORCINGS = ("XPEN055", "ANT-12", "MAR")
+FORCING_COLOURS = {
+    "XPEN055": "#6250d6",  # violet
+    "ANT-12": "#e34948",  # red
+    "MAR": "#008300",  # green
+}
+
 CURRENT = "-"
 ALTERNATIVE = "--"
 # the two sides of each pair of runs: (current, alternative)
@@ -58,6 +68,13 @@ FULL_WIDTH_IN = 6.3  # 16 cm
 def scheme_colour(scheme: str) -> str:
     """The colour of a densification scheme. The colour follows the scheme, never its position in a plot."""
     return SCHEME_COLOURS.get(scheme, OTHER_SCHEME_COLOUR)
+
+
+def forcing_colour(forcing: str) -> str:
+    """The colour of a forcing in FORCINGS, for example forcing_colour("ANT-12")."""
+    if forcing not in FORCING_COLOURS:
+        raise ValueError(f"{forcing!r} is not one of {FORCINGS}")
+    return FORCING_COLOURS[forcing]
 
 
 def pair_style(pair: str, side: str) -> str:
