@@ -1,4 +1,4 @@
-"""Copy the complete local runs to the share (FEAT-008).
+"""Copy the complete local runs, the forcing CSVs and the melt maps to the share (FEAT-008).
 
 The runs are in {CFM_data_path}/runs. The copy is in {CFM_share_data_path}/runs, with the same relative path. The script
 selects the local runs with status "complete" and gives each one a class:
@@ -48,6 +48,36 @@ rename, the run fails and the script reports it.
 The script never deletes a local file, and deletes on the share only the .incoming folder of the run that it copies.
 It does not copy a log.
 
+The forcing CSVs and the melt maps (no decisions):
+
+    forcing   each .csv file under forcing_root() (local), with its .json file, goes to
+              {CFM_share_data_path}/forcing/<path relative to forcing_root()>, the path that find_forcing_csv reads
+              (force.cache.share_forcing_path). Other files in the forcing folder are ignored, and so is a .json file
+              with no .csv file.
+    melt      each {CFM_data_path}/melt/*.nc goes to {CFM_share_data_path}/melt/<name>. No local melt folder is fine.
+
+Each file has the class NEW (the share has no file: copy it), SAME (the same size and SHA-256: no action) or CONFLICT
+(the share has a different file with the same name: refused, never overwritten. A forcing file is the same file for
+the same release, so this is an error). A file that cannot be read gives ERROR. A forcing CSV with no local .json
+file gives ERROR, unless the share has its .json file. The exit code is 1 for CONFLICT and ERROR.
+
+The .json file of a forcing CSV has metadata of the fetch (created, host, requested_location), so the files of two
+VMs differ. A .json file that differs from the share file is SAME, and the share file is kept, if its CSV is SAME and
+the two files have the same csv_sha256; else it is CONFLICT. A CSV and its .json file are one unit: if the CSV is
+CONFLICT or ERROR, the .json file is not copied either.
+
+A file goes to {share}/.incoming/forcing/<relative path> (or .incoming/melt/<name>), is flushed, read again and
+compared by SHA-256 as for a run, and is linked to the target (os.link, which does not replace a file that another VM
+made; the folder of the target is made) and the .incoming file is removed. If the mount does not support hard links,
+the script checks the target and renames the file: then a small window remains between the check and the rename. If
+the target exists, the file fails. Only the .incoming file of this file is removed first. The .json file is copied
+before its .csv file, so find_forcing_csv never finds a share CSV with no .json file. If the .json file is refused or
+fails, the .csv file is not copied. If the files cannot be listed (an OSError), the script reports it, does not copy
+any of them, goes on with the runs, and the exit code is 1. The files are copied after the decisions of the
+DIFFER runs, and before the runs. So a run
+decision that is missing (ask, no terminal) also stops the copy of the files. The log has one line for each file, with
+the path "forcing/<relative path>" or "melt/<name>".
+
 The default is a dry run: it reads the local runs and each file of the share copies (to compare the SHA-256, this is
 slow for many runs), and writes nothing, on the share or on the local disk. --apply writes the copies and the log
 {CFM_data_path}/sync-logs/<YYYY-MM-DDTHHMMSS>.txt (each run, its class, its decision or result and its notes; a name
@@ -65,8 +95,10 @@ Usage:
 import argparse
 import copy
 import datetime
+import errno
 import glob
 import importlib.util
+import json
 import os
 import shutil
 import sys
@@ -74,7 +106,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set
 
 from cfm_config import config, share_available, share_data_path
-from force.cache import sha256_file
+from force.cache import forcing_root, sha256_file, share_forcing_path
 from sim.manifest import COMPLETE, MANIFEST_NAME, read_manifest, runs_root, share_runs_root, write_manifest
 
 _spec = importlib.util.spec_from_file_location(
@@ -122,6 +154,10 @@ class RunSync:
     copies: Dict[str, tuple] = field(default_factory=dict)
     decision: str = ""  # DIFFER: keep, replace or skip
     outcome: str = ""
+    requires: Optional["RunSync"] = None  # a forcing CSV: its .json file, which is copied before it
+    json_of: Optional["RunSync"] = None  # a forcing .json file: its CSV
+    no_json: bool = False  # a forcing CSV with no .json file on the local disk
+    blocked: str = ""  # a .json file that is not copied, and why
 
 
 def select_local_runs() -> List[str]:
@@ -412,8 +448,126 @@ def _log_line(log, run: RunSync) -> None:
     log.flush()
 
 
+def select_files() -> List[RunSync]:
+    """The forcing CSVs (each one after its .json file) and the melt maps of the local disk, as items to classify.
+    rel is "forcing/<path relative to forcing_root()>" or "melt/<name>". The target is not classified yet. An OSError
+    is raised (main reports it)."""
+    items: List[RunSync] = []
+    root = forcing_root()
+    if _exists(root):
+        for name in sorted(all_files(root)):
+            if not name.endswith(".csv"):
+                continue
+            csv = RunSync(rel=os.path.join("forcing", name), local=os.path.join(root, name), target="")
+            csv.target = share_forcing_path(csv.local)
+            json_name = os.path.splitext(name)[0] + ".json"
+            if _exists(os.path.join(root, json_name)):
+                json_file = RunSync(
+                    rel=os.path.join("forcing", json_name), local=os.path.join(root, json_name), target=""
+                )
+                json_file.target = share_forcing_path(json_file.local)
+                json_file.json_of = csv
+                csv.requires = json_file
+                items.append(json_file)  # the .json file is copied before its CSV
+            else:
+                csv.no_json = True
+            items.append(csv)
+    melt = os.path.join(config["CFM_data_path"], "melt")
+    for path in sorted(glob.glob(os.path.join(melt, "*.nc"))):
+        name = os.path.basename(path)
+        target = os.path.join(share_data_path(), "melt", name)
+        items.append(RunSync(rel=os.path.join("melt", name), local=path, target=target))
+    return items
+
+
+def same_forcing_json(local: str, share: str) -> bool:
+    """Whether two forcing JSON files describe the same CSV: both parse, and have the same csv_sha256. The other keys
+    (created, host, requested_location) are metadata of the fetch, so two VMs that fetch the same forcing differ."""
+    try:
+        with open(local) as local_file, open(share) as share_file:
+            local_json, share_json = json.load(local_file), json.load(share_file)
+    except ValueError:
+        return False
+    return (
+        isinstance(local_json, dict)
+        and isinstance(share_json, dict)
+        and local_json.get("csv_sha256") is not None
+        and local_json.get("csv_sha256") == share_json.get("csv_sha256")
+    )
+
+
+def classify_file(item: RunSync) -> None:
+    """Give a forcing file or a melt map the class NEW, SAME, CONFLICT or ERROR. An OSError is raised.
+
+    A CSV with no local .json file is ERROR unless the share has its .json file. A .json file that differs from the
+    share file is SAME (with a note, and the share file is kept) if its CSV is SAME and the two files have the same
+    csv_sha256; else it is CONFLICT, so the CSV of an item must be classified before its .json file.
+    """
+    if item.no_json and not _exists(os.path.splitext(item.target)[0] + ".json"):
+        item.cls = ERROR
+        item.notes.append("no .json file next to the CSV, and none on the share")
+    elif not _exists(item.target):
+        item.cls = NEW
+    elif os.path.getsize(item.local) != os.path.getsize(item.target) or sha256_file(item.local) != sha256_file(
+        item.target
+    ):
+        item.cls = CONFLICT
+        item.notes.append("the share has a different file with this name; it is never overwritten")
+        if item.json_of is not None and item.json_of.cls == SAME and same_forcing_json(item.local, item.target):
+            item.cls = SAME
+            item.notes[:] = ["the JSON differs only in its metadata; the share JSON is kept"]
+    else:
+        item.cls = SAME
+
+
+def classify_files(items: List[RunSync]) -> None:
+    """Classify the files (a CSV before its .json file). An item that gets an OSError is ERROR. A .json file whose CSV
+    is CONFLICT or ERROR is not copied (item.blocked), so the share never gets a .json file of a refused CSV."""
+    for item in sorted(items, key=lambda item: item.json_of is not None):
+        try:
+            classify_file(item)
+        except (OSError, ValueError) as error:
+            item.cls = ERROR
+            item.notes.append(str(error))
+    for item in items:
+        if item.json_of is not None and item.json_of.cls in (CONFLICT, ERROR) and item.cls == NEW:
+            item.blocked = f"its CSV {item.json_of.rel} is {item.json_of.cls}"
+
+
+def _publish(incoming: str, target: str) -> None:
+    """Make the target from the .incoming file, and remove the .incoming file. os.rename replaces a file that exists,
+    so the target is made with os.link, which fails with FileExistsError if another VM made it first. If the mount
+    does not support hard links, this checks the target and renames: then a small window remains between the check and
+    the rename."""
+    try:
+        os.link(incoming, target)
+    except FileExistsError:
+        raise RuntimeError(f"{target} appeared during the copy (another VM?); the copy stays in {incoming}")
+    except OSError as error:
+        if error.errno not in (errno.EPERM, errno.EOPNOTSUPP, errno.ENOTSUP, errno.EXDEV, errno.ENOSYS):
+            raise
+        if _exists(target):
+            raise RuntimeError(f"{target} appeared during the copy (another VM?); the copy stays in {incoming}")
+        _rename(incoming, target)
+        return
+    os.remove(incoming)
+
+
+def copy_file_item(item: RunSync, share: str) -> None:
+    """Copy a file to the share by {share}/.incoming/<rel>, and make the target from it. Raises on a failure."""
+    incoming = os.path.join(share, INCOMING, item.rel)
+    if _exists(incoming):
+        os.remove(incoming)  # the only removal: the .incoming file of this file
+    os.makedirs(os.path.dirname(incoming), exist_ok=True)
+    _copy_checked(item.local, incoming)
+    os.makedirs(os.path.dirname(item.target), exist_ok=True)
+    _publish(incoming, item.target)
+
+
 def main(argv: Optional[List[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description="Copy the complete local runs to the share (dry run by default)")
+    parser = argparse.ArgumentParser(
+        description="Copy the complete local runs, forcing CSVs and melt maps to the share (dry run by default)"
+    )
     parser.add_argument("--apply", action="store_true", help="copy the runs and write the log")
     parser.add_argument("--on-differ", choices=[ASK, KEEP, REPLACE, SKIP], default=ASK,
                         help="one decision for all the DIFFER runs (default: ask)")
@@ -443,7 +597,19 @@ def main(argv: Optional[List[str]] = None) -> int:
     print("Classes: " + ", ".join(f"{cls} {count}" for cls, count in counts.items()))
 
     failed = False
-    for run in runs:
+    try:
+        files = select_files()
+    except OSError as error:  # for example an unreadable forcing folder; the runs go on
+        print(f"ERROR: the forcing and melt files cannot be listed ({error}); they are not copied.", file=sys.stderr)
+        files, failed = [], True
+    classify_files(files)
+    for number, item in enumerate(files, 1):
+        print(f"[file {number}/{len(files)}] {item.cls:8s} {item.rel}", flush=True)
+    if files:
+        counts = ", ".join(f"{cls} {sum(item.cls == cls for item in files)}" for cls in (NEW, SAME, CONFLICT, ERROR))
+        print(f"Files: {counts}")
+
+    for run in runs + files:
         if run.cls in (CONFLICT, ERROR):
             failed = True
             print(f"ERROR: {run.cls} {run.rel}: {'; '.join(run.notes)}", file=sys.stderr)
@@ -467,12 +633,30 @@ def main(argv: Optional[List[str]] = None) -> int:
                 print(f"ERROR: no decision for {run.rel} (the input is not a terminal, or it ended). "
                       "Use --on-differ. Nothing is copied.", file=sys.stderr)
         if any(not run.decision for run in differ):
-            for run in runs:
+            for run in runs + files:
                 run.outcome = "no decision: nothing copied" if run.cls == DIFFER else "not done"
                 _log_line(log, run)
             return 1
 
         os.makedirs(share_runs_root(), exist_ok=True)
+        for number, item in enumerate(files, 1):
+            if item.cls == NEW and item.blocked:
+                item.outcome = f"refused: {item.blocked}"
+                item.notes.append(item.blocked)
+            elif item.cls == NEW:
+                print(f"[file {number}/{len(files)}] {item.rel}: writing", flush=True)
+                try:
+                    if item.requires is not None and item.requires.outcome != "copied" and item.requires.cls != SAME:
+                        raise RuntimeError(f"not copied: {item.requires.rel} is not on the share")
+                    copy_file_item(item, share)
+                    item.outcome = "copied"
+                except Exception as error:  # report the file, and go on with the next
+                    item.outcome = f"FAILED: {error}"
+                    failed = True
+                    print(f"ERROR: {item.rel}: {error}", file=sys.stderr)
+            else:
+                item.outcome = "no change" if item.cls == SAME else "refused"
+            _log_line(log, item)
         today = datetime.date.today().isoformat()
         todo = [run for run in runs if run.cls in (NEW, SITES) or run.decision == REPLACE]
         done = 0
@@ -497,7 +681,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             else:
                 run.outcome = "no change"
             _log_line(log, run)
-    print(f"Done. {sum(run.outcome.startswith('FAILED') for run in runs)} runs failed.")
+    print(f"Done. {sum(run.outcome.startswith('FAILED') for run in runs + files)} runs or files failed.")
     return 1 if failed else 0
 
 

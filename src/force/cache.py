@@ -46,10 +46,15 @@ def find_forcing_csv(mp: ModelPoint, start_year: Optional[int] = None, end_year:
     """Path of the forcing CSV for a read: the local file if it exists, else the share copy if it exists, else the
     local path (the caller then gives its usual error). Do not use for a write: use forcing_csv_path."""
     local = forcing_csv_path(mp, start_year, end_year)
+    share = share_forcing_path(local)
+    return local if share is None else find_on_share(local, share)
+
+
+def share_forcing_path(local: str) -> Optional[str]:
+    """The path on the share of a file in the forcing cache: {CFM_share_data_path}/forcing/<path relative to
+    forcing_root()>. None if CFM_share_data_path is not set."""
     share = share_data_path()
-    if share is None:
-        return local
-    return find_on_share(local, os.path.join(share, "forcing", os.path.relpath(local, forcing_root())))
+    return None if share is None else os.path.join(share, "forcing", os.path.relpath(local, forcing_root()))
 
 
 def forcing_json_path(csv_path: str) -> str:

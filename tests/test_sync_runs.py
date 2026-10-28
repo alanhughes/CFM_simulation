@@ -566,3 +566,316 @@ def test_ask_eof_gives_no_decision(roots, monkeypatch):
     monkeypatch.setattr("builtins.input", eof)
     assert sync_args("--apply") == 1
     assert (share / "runs" / REL / "CFMresults.hdf5").read_bytes() == b"other"
+
+
+# the forcing CSVs and the melt maps (second commit)
+
+from types import SimpleNamespace  # noqa: E402
+
+from force.cache import find_forcing_csv  # noqa: E402
+
+MP = SimpleNamespace(rcm_name="MAR", release="v3.12", i=121, j=13)
+CSV = os.path.join("MAR", "v3.12", "121_13_1979_2024.csv")
+JSON = os.path.join("MAR", "v3.12", "121_13_1979_2024.json")
+MELT = "MAR_avg_yearly_melt_map_1979-2024.nc"
+
+
+def make_forcing(root, data=b"csv", json_data=b"{}", folder="forcing"):
+    for rel, content in ((CSV, data), (JSON, json_data)):
+        path = Path(root) / folder / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+
+
+def test_forcing_new_copied_and_found(roots, monkeypatch):
+    local, share = roots
+    make_forcing(local)
+    assert sync_args() == 0
+    assert tree(share) == []  # the dry run writes nothing
+    assert sync_args("--apply") == 0
+    assert (share / "forcing" / CSV).read_bytes() == b"csv"
+    assert (share / "forcing" / JSON).read_bytes() == b"{}"
+    assert not (share / ".incoming" / "forcing" / CSV).exists()
+    assert str(local) in str(sync.forcing_root())
+    shutil.rmtree(local / "forcing")
+    assert find_forcing_csv(MP, 1979, 2024) == str(share / "forcing" / CSV)
+    log = next((local / "sync-logs").iterdir()).read_text()
+    assert f"forcing{os.sep}{CSV}\tNEW\t-\tcopied" in log
+
+
+def test_forcing_same_and_other_files_ignored(roots, capsys):
+    local, share = roots
+    make_forcing(local)
+    make_forcing(share)
+    (local / "forcing" / "notes.txt").write_text("x")
+    before = snapshot(share)
+    assert sync_args("--apply") == 0
+    assert snapshot(share) == before
+    assert "Files: NEW 0, SAME 2" in capsys.readouterr().out
+
+
+def test_forcing_different_is_refused_and_json_first(roots, capsys):
+    local, share = roots
+    make_forcing(local)
+    make_forcing(share, json_data=b'{"other": 1}')  # the JSON differs, the CSV is the same
+    (share / "forcing" / CSV).unlink()  # the CSV would be NEW
+    assert sync_args("--apply") == 1
+    assert (share / "forcing" / JSON).read_bytes() == b'{"other": 1}'
+    assert not (share / "forcing" / CSV).exists()  # not copied: its JSON is refused
+    assert not (share / ".incoming").exists()
+    make_forcing(share, data=b"other")
+    assert sync_args("--apply") == 1
+    assert (share / "forcing" / CSV).read_bytes() == b"other"
+
+
+def test_json_copied_before_csv(roots, monkeypatch):
+    local, share = roots
+    make_forcing(local)
+    order = []
+    real = sync._publish
+    monkeypatch.setattr(sync, "_publish", lambda s, t: (order.append(os.path.basename(t)), real(s, t)))
+    assert sync_args("--apply") == 0
+    assert order == ["121_13_1979_2024.json", "121_13_1979_2024.csv"]
+
+
+def test_csv_without_json_is_error(roots):
+    local, share = roots
+    make_forcing(local)
+    (local / "forcing" / JSON).unlink()
+    assert sync_args("--apply") == 1
+    assert not (share / "forcing" / CSV).exists()
+
+
+def test_forcing_data_path_not_default(roots, tmp_path, monkeypatch):
+    local, share = roots
+    monkeypatch.setitem(config, "forcing_data_path", str(tmp_path / "elsewhere"))
+    make_forcing(tmp_path, folder="elsewhere")
+    assert sync_args("--apply") == 0
+    assert (share / "forcing" / CSV).read_bytes() == b"csv"
+    shutil.rmtree(tmp_path / "elsewhere")
+    assert find_forcing_csv(MP, 1979, 2024) == str(share / "forcing" / CSV)
+
+
+def test_melt_new_same_different(roots):
+    local, share = roots
+    (local / "melt").mkdir()
+    (local / "melt" / MELT).write_bytes(b"nc")
+    (local / "melt" / "readme.txt").write_text("x")
+    assert sync_args() == 0
+    assert tree(share) == []
+    assert sync_args("--apply") == 0
+    assert (share / "melt" / MELT).read_bytes() == b"nc"
+    assert not (share / "melt" / "readme.txt").exists()
+    assert sync_args("--apply") == 0  # SAME
+    (local / "melt" / MELT).write_bytes(b"new nc")
+    assert sync_args("--apply") == 1  # different: never overwritten
+    assert (share / "melt" / MELT).read_bytes() == b"nc"
+
+
+def test_no_local_melt_or_forcing_folder(roots):
+    assert sync_args("--apply") == 0
+
+
+def test_file_copy_stopped_before_rename(roots, monkeypatch):
+    local, share = roots
+    (local / "melt").mkdir()
+    (local / "melt" / MELT).write_bytes(b"nc")
+
+    def stop(source, target):
+        raise RuntimeError("network stopped")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(sync, "_publish", stop)
+        assert sync_args("--apply") == 1
+    assert (share / ".incoming" / "melt" / MELT).exists()
+    assert not (share / "melt" / MELT).exists()
+    assert sync_args("--apply") == 0
+    assert (share / "melt" / MELT).read_bytes() == b"nc"
+    assert not (share / ".incoming" / "melt" / MELT).exists()
+
+
+def test_file_target_appears_before_rename(roots, monkeypatch):
+    local, share = roots
+    (local / "melt").mkdir()
+    (local / "melt" / MELT).write_bytes(b"nc")
+    real = sync._copy_checked
+
+    def copy_then_other_vm(source, target):
+        real(source, target)
+        (share / "melt").mkdir(exist_ok=True)
+        (share / "melt" / MELT).write_bytes(b"nc")
+
+    monkeypatch.setattr(sync, "_copy_checked", copy_then_other_vm)
+    assert sync_args("--apply") == 1
+    assert (share / ".incoming" / "melt" / MELT).exists()
+
+
+def test_missing_decision_also_stops_the_files(roots):
+    local, share = roots
+    make_run(local)
+    make_run(share, data=b"other")
+    make_forcing(local)
+    assert sync_args("--apply") == 1
+    assert not (share / "forcing").exists()
+
+
+# the review of the second commit
+
+
+def forcing_json(sha, **meta):
+    import json
+
+    return json.dumps({"csv_sha256": sha, **meta}).encode()
+
+
+def test_json_with_other_metadata_is_same(roots, capsys):
+    local, share = roots
+    make_forcing(local, json_data=forcing_json("a" * 64, host="vm1", created="1"))
+    make_forcing(share, json_data=forcing_json("a" * 64, host="vm2", created="2"))
+    before = snapshot(share)
+    assert sync_args("--apply") == 0
+    assert snapshot(share) == before
+    assert "Files: NEW 0, SAME 2" in capsys.readouterr().out
+    assert "metadata" in next((local / "sync-logs").iterdir()).read_text()
+
+
+def test_json_with_other_csv_sha256_is_conflict(roots):
+    local, share = roots
+    make_forcing(local, json_data=forcing_json("a" * 64))
+    make_forcing(share, json_data=forcing_json("b" * 64))
+    assert sync_args("--apply") == 1
+    assert read_json(share / "forcing" / JSON)["csv_sha256"] == "b" * 64
+
+
+def test_json_metadata_differs_but_csv_differs_is_conflict(roots):
+    local, share = roots
+    make_forcing(local, json_data=forcing_json("a" * 64, host="1"))
+    make_forcing(share, data=b"other", json_data=forcing_json("a" * 64, host="2"))
+    assert sync_args("--apply") == 1
+    assert (share / "forcing" / CSV).read_bytes() == b"other"
+    assert read_json(share / "forcing" / JSON)["host"] == "2"
+
+
+def read_json(path):
+    import json
+
+    return json.loads(Path(path).read_text())
+
+
+def test_csv_refused_then_json_not_copied(roots):
+    local, share = roots
+    make_forcing(local)
+    (share / "forcing" / CSV).parent.mkdir(parents=True)
+    (share / "forcing" / CSV).write_bytes(b"other")
+    assert sync_args("--apply") == 1
+    assert not (share / "forcing" / JSON).exists()
+    assert not (share / ".incoming").exists()
+    assert "refused" in next((local / "sync-logs").iterdir()).read_text()
+
+
+def test_failed_json_copy_stops_its_csv(roots, monkeypatch):
+    local, share = roots
+    make_forcing(local)
+    real = sync._copy_checked
+
+    def fail_json(source, target):
+        if target.endswith(".json"):
+            raise RuntimeError("network stopped")
+        real(source, target)
+
+    monkeypatch.setattr(sync, "_copy_checked", fail_json)
+    assert sync_args("--apply") == 1
+    assert not (share / "forcing" / CSV).exists()
+    assert not (share / ".incoming" / "forcing" / CSV).exists()
+
+
+def test_csv_without_local_json_but_share_json_is_copied(roots):
+    local, share = roots
+    make_forcing(local)
+    (local / "forcing" / JSON).unlink()
+    (share / "forcing" / JSON).parent.mkdir(parents=True)
+    (share / "forcing" / JSON).write_bytes(b"{}")
+    assert sync_args("--apply") == 0
+    assert (share / "forcing" / CSV).read_bytes() == b"csv"
+
+
+def test_unreadable_forcing_folder_does_not_stop_the_runs(roots, monkeypatch, capsys):
+    local, share = roots
+    make_run(local)
+    make_forcing(local)
+
+    real = sync.all_files
+
+    def listing(folder):
+        if folder == sync.forcing_root():
+            raise OSError(errno.EIO, "input/output error")
+        return real(folder)
+
+    monkeypatch.setattr(sync, "all_files", listing)
+    assert sync_args("--apply") == 1
+    assert (share / "runs" / REL / "manifest.json").exists()
+    assert "cannot be listed" in capsys.readouterr().err
+    assert not (share / "forcing").exists()
+
+
+def test_file_target_untouched_when_it_appears(roots, monkeypatch):
+    local, share = roots
+    (local / "melt").mkdir()
+    (local / "melt" / MELT).write_bytes(b"nc")
+    real = sync._copy_checked
+
+    def copy_then_other_vm(source, target):
+        real(source, target)
+        (share / "melt").mkdir(exist_ok=True)
+        (share / "melt" / MELT).write_bytes(b"from the other VM")
+
+    monkeypatch.setattr(sync, "_copy_checked", copy_then_other_vm)
+    assert sync_args("--apply") == 1
+    assert (share / "melt" / MELT).read_bytes() == b"from the other VM"
+    assert (share / ".incoming" / "melt" / MELT).read_bytes() == b"nc"
+
+
+def test_publish_without_hard_links_renames(roots, monkeypatch, tmp_path):
+    def no_link(source, target):
+        raise OSError(errno.EPERM, "not permitted")
+
+    monkeypatch.setattr(os, "link", no_link)
+    (tmp_path / "a").write_bytes(b"1")
+    sync._publish(str(tmp_path / "a"), str(tmp_path / "b"))
+    assert (tmp_path / "b").read_bytes() == b"1" and not (tmp_path / "a").exists()
+    (tmp_path / "a").write_bytes(b"2")
+    with pytest.raises(RuntimeError):
+        sync._publish(str(tmp_path / "a"), str(tmp_path / "b"))
+    assert (tmp_path / "b").read_bytes() == b"1"
+
+
+def test_io_error_on_file_target_is_error(roots, monkeypatch):
+    local, share = roots
+    (local / "melt").mkdir()
+    (local / "melt" / MELT).write_bytes(b"nc")
+    target = str(share / "melt" / MELT)
+    real = os.lstat
+
+    def lstat(path, *args, **kwargs):
+        if str(path) == target:
+            raise OSError(errno.EIO, "input/output error")
+        return real(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "lstat", lstat)
+    assert sync_args("--apply") == 1
+    assert not (share / ".incoming").exists()
+
+
+def test_file_sha_mismatch_is_failed_and_not_published(roots, monkeypatch):
+    local, share = roots
+    (local / "melt").mkdir()
+    (local / "melt" / MELT).write_bytes(b"nc")
+
+    def bad_copy(source, target):
+        Path(target).write_bytes(b"xx")
+
+    monkeypatch.setattr(sync, "_copy_file", bad_copy)
+    assert sync_args("--apply") == 1
+    assert (share / ".incoming" / "melt" / MELT).exists()
+    assert not (share / "melt" / MELT).exists()
+    assert "FAILED" in next((local / "sync-logs").iterdir()).read_text()
