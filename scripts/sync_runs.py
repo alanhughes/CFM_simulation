@@ -239,9 +239,10 @@ def _size_sha(path: str) -> tuple:
     return os.path.getsize(path), sha256_file(path)
 
 
-def classify_run(local: str, target: str, rel: str) -> RunSync:
+def classify_run(local: str, target: str, rel: str, drop_share_cache: bool = False) -> RunSync:
     """Give the run the class NEW, SAME, SITES, DIFFER or CONFLICT. Reads every file of an existing share copy, but
-    only if the run hash is the same. An OSError is raised (main gives the class ERROR)."""
+    only if the run hash is the same. An OSError is raised (main gives the class ERROR). If drop_share_cache, each
+    share file is dropped from the page cache just before it is read (prune_local_runs.py)."""
     run = RunSync(rel=rel, local=local, target=target)
     if not _exists(target):
         run.cls = NEW
@@ -280,8 +281,12 @@ def classify_run(local: str, target: str, rel: str) -> RunSync:
             info = {"local": _size_sha(local_path), "share": None}
         elif name not in local_files:
             run.notes.append(f"{name}: in the share copy only")
+            if drop_share_cache:
+                _drop_cache(share_path)
             info = {"local": None, "share": _size_sha(share_path)}
         else:
+            if drop_share_cache:
+                _drop_cache(share_path)
             info = {"local": _size_sha(local_path), "share": _size_sha(share_path)}
             if info["local"] == info["share"]:
                 continue
@@ -341,20 +346,35 @@ def _copy_file(source: str, target: str) -> None:
 _warned_fadvise = False
 
 
+def _forget(fd: int) -> None:
+    """Drop the file of fd from the page cache. If posix_fadvise is not available or fails, warn once."""
+    global _warned_fadvise
+    try:
+        os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+    except (AttributeError, OSError) as error:
+        if not _warned_fadvise:
+            _warned_fadvise = True
+            print(f"WARNING: posix_fadvise is not available ({error}); the check may read the page cache.",
+                  file=sys.stderr)
+
+
+def _drop_cache(path: str) -> None:
+    """Drop the file from the page cache, so that the next read comes from the share. The file is opened for a read
+    only (no fsync). If posix_fadvise is not available or fails, warn once: the check may read the page cache."""
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        _forget(fd)
+    finally:
+        os.close(fd)
+
+
 def _flush_and_forget(path: str) -> None:
     """fsync the file, and drop it from the page cache, so that the next read comes from the share. If posix_fadvise
     is not available or fails, warn once: the check may then read the page cache."""
-    global _warned_fadvise
     fd = os.open(path, os.O_RDWR)
     try:
         os.fsync(fd)
-        try:
-            os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
-        except (AttributeError, OSError) as error:
-            if not _warned_fadvise:
-                _warned_fadvise = True
-                print(f"WARNING: posix_fadvise is not available ({error}); the check may read the page cache.",
-                      file=sys.stderr)
+        _forget(fd)
     finally:
         os.close(fd)
 
