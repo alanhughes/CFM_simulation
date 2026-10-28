@@ -333,3 +333,21 @@ def test_partial_removal_failed(roots, monkeypatch):
     monkeypatch.setattr(prune.shutil, "rmtree", failing)
     assert prune_args("--apply") == 1
     assert "a part of the folder is possibly removed" in next((local / "sync-logs").iterdir()).read_text()
+
+
+def test_oserror_on_share_manifest(roots, monkeypatch):
+    """An I/O error on the share manifest is ERROR (exit 1), not DIFFER "no manifest" (exit 0)."""
+    local, share = roots
+    folder = make_run(local)
+    make_run(share)
+    original = open
+
+    def failing(path, *args, **kwargs):
+        if str(path) == str(share / "runs" / rel_of(HASH_A) / "manifest.json"):
+            raise OSError(errno.EIO, "Input/output error")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", failing)
+    assert prune_args("--apply") == 1
+    assert folder.exists()
+    assert "\tERROR\t" in next((local / "sync-logs").iterdir()).read_text()

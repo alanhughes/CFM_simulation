@@ -135,3 +135,20 @@ def test_share_check_is_kept(share):
     assert run_roots() == [runs_root()]
     reset_share_check()
     assert run_roots() == [runs_root(), str(share / "runs")]
+
+
+def test_read_manifest_missing_is_none(tmp_path):
+    assert sim.manifest.read_manifest(str(tmp_path)) is None
+    (tmp_path / "file").write_text("")
+    assert sim.manifest.read_manifest(str(tmp_path / "file")) is None  # NotADirectoryError
+
+
+def test_read_manifest_oserror_is_raised(tmp_path, monkeypatch):
+    """An I/O error of the soft share mount is not "no manifest" (os.path.exists would hide it)."""
+
+    def failing(path, *args, **kwargs):
+        raise OSError(errno.EIO, "Input/output error")
+
+    monkeypatch.setattr("builtins.open", failing)
+    with pytest.raises(OSError):
+        sim.manifest.read_manifest(str(tmp_path))

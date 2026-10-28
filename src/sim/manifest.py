@@ -155,12 +155,13 @@ def now() -> str:
 
 
 def read_manifest(folder: str) -> dict | None:
-    """Manifest of the run in folder, or None if the folder has no manifest."""
-    path = os.path.join(folder, MANIFEST_NAME)
-    if not os.path.exists(path):
+    """Manifest of the run in folder, or None if the folder has no manifest. Any other OSError is raised:
+    os.path.exists gives False for an OSError, so on the soft share mount an I/O error would look like no manifest."""
+    try:
+        with open(os.path.join(folder, MANIFEST_NAME)) as file:
+            return json.load(file)
+    except (FileNotFoundError, NotADirectoryError):
         return None
-    with open(path) as file:
-        return json.load(file)
 
 
 def write_manifest(folder: str, manifest: dict) -> None:
