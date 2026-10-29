@@ -258,3 +258,63 @@ def test_manifest_with_no_spin_up(data_path, capsys):
     assert manifest["migrated"]["spin"] is None
     assert "spin_end_year" in manifest["migrated"]["unknown"]
     assert any("spin-up is not measured" in note for note in manifest["migrated"]["notes"])
+
+
+# the inferred cfm_config of an old folder with no CFMconfig JSON (FEAT-009)
+
+
+def write_seb_forcing(path: Path, seb_group: bool, smelt: bool) -> None:
+    """A CFMforcing.hdf5 with or without the group SEB and the dataset main/SMELT, as forcing_writer writes it."""
+    with h5py.File(path, "w") as file:
+        file["main/time"] = np.arange(4.0)
+        if smelt:
+            file["main/SMELT"] = np.zeros(4)
+        if seb_group:
+            file["SEB/T2m"] = np.zeros(4)
+
+
+@pytest.mark.parametrize(
+    "seb_group, smelt, expected",
+    [(True, False, {"SEB": True}), (False, True, {"SEB": False}), (True, True, {}), (False, False, {})],
+)
+def test_infer_cfm_config(tmp_path, seb_group, smelt, expected):
+    write_seb_forcing(tmp_path / "CFMforcing.hdf5", seb_group, smelt)
+    assert migrate.infer_cfm_config(str(tmp_path)) == expected
+
+
+def test_infer_cfm_config_of_a_file_that_is_not_hdf5(tmp_path):
+    assert migrate.infer_cfm_config(str(tmp_path)) == {}  # no file
+    (tmp_path / "CFMforcing.hdf5").write_bytes(b"forcing")
+    assert migrate.infer_cfm_config(str(tmp_path)) == {}
+
+
+@pytest.mark.parametrize("seb", [True, False])
+def test_manifest_has_the_inferred_cfm_config(data_path, seb):
+    source = make_source(
+        data_path / "old", config_json=False, forcing=lambda path: write_seb_forcing(path, seb, not seb)
+    )
+    (plan,) = migrate.build_plans([("x", str(source))])
+    no_inference = dataclasses.replace(plan, inferred_cfm_config={})
+    assert migrate.migrated_hash_inputs(plan) == migrate.migrated_hash_inputs(no_inference)  # not in the hash
+    assert migrate.main(["--source", "x", str(source), "--copy"]) == 0
+    (run,) = find_runs(cfm_config={"SEB": seb})
+    migrated = run.manifest["migrated"]
+    assert migrated["inferred_cfm_config"] == {"SEB": seb}
+    assert migrated["inferred_from"] == {"SEB": migrate.SEB_INDICATORS[seb]}
+    assert "cfm_config" in migrated["unknown"]
+    assert run.manifest["cfm_config"] is None
+    assert find_runs(cfm_config={"SEB": not seb}) == []
+
+
+def test_folder_with_a_config_json_is_not_inferred(data_path):
+    source = make_source(data_path / "old", forcing=lambda path: write_seb_forcing(path, True, False))
+    (plan,) = migrate.build_plans([("x", str(source))])
+    assert plan.inferred_cfm_config == {}
+
+
+def test_real_seb_false_forcing_is_inferred():
+    """The SEB false run 1b5aa766 (FEAT-009), read only. Skipped if the folder is not on this machine."""
+    folder = "/home/hughes54/CFM_data/runs/RACMO_261_126/GSFC2020_bucket_1979-2023/ab871c8/1b5aa766"
+    if not os.path.exists(os.path.join(folder, "CFMforcing.hdf5")):
+        pytest.skip("no 1b5aa766 on this machine")
+    assert migrate.infer_cfm_config(folder) == {"SEB": False}
