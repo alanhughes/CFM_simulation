@@ -4,6 +4,7 @@ Usage:
     python scripts/find_runs.py                                   # all the complete runs
     python scripts/find_runs.py --site CI-0 --physrho GSFC2020 --cfm ab871c8
     python scripts/find_runs.py --cfm 3e3bf7e-speersm --spin-end-year 1995   # the runs of one spin-up (FEAT-004)
+    python scripts/find_runs.py --cfm-config SEB=false            # the runs with cfm_config SEB false (FEAT-009)
     python scripts/find_runs.py --status all                      # also the running and failed runs
     python scripts/find_runs.py --index                           # also write index.csv in {CFM_share_data_path}, or in {CFM_data_path}
     python scripts/find_runs.py --index runs.parquet              # the same table as parquet (needs pyarrow)
@@ -18,6 +19,7 @@ fails, and for an OSError of the query (for example, the share stops during the 
 """
 
 import argparse
+import json
 import os
 import sys
 from typing import List, Optional
@@ -52,6 +54,18 @@ def write_index(table: pd.DataFrame, path: str) -> None:
         raise
 
 
+def cfm_config_item(text: str) -> tuple:
+    """KEY=VALUE of --cfm-config: VALUE is read as JSON (SEB=false gives False, SEB_TL_thick=0.05 gives 0.05), or is
+    the text if it is not JSON (meltwater_solver=ncz)."""
+    key, sep, value = text.partition("=")
+    if not sep or not key:
+        raise argparse.ArgumentTypeError(f"give KEY=VALUE, not {text!r}")
+    try:
+        return key, json.loads(value)
+    except ValueError:
+        return key, value
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="List the CFM runs that agree with the filters")
     parser.add_argument("--site", help="Site name in sites.yaml (the runs of its model point)")
@@ -65,6 +79,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--spin-end-year", type=int, help="run.spin_end_year in the manifest (no filter if not given)")
     parser.add_argument("--cfm", help="Label of the CFM version")
     parser.add_argument("--hash", help="Run hash, or its first characters")
+    parser.add_argument(
+        "--cfm-config",
+        type=cfm_config_item,
+        action="append",
+        metavar="KEY=VALUE",
+        help="only the runs with this cfm_config value; VALUE is JSON, for example SEB=false. Give it more than one time "
+        "for more keys. A run whose value is not known does not agree (FEAT-009)",
+    )
     parser.add_argument("--status", default="complete", help="complete (default), running, failed or all")
     parser.add_argument(
         "--index",
@@ -108,6 +130,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             cfm=args.cfm,
             run_hash=args.hash,
             status=None if args.status == "all" else args.status,
+            cfm_config=dict(args.cfm_config) if args.cfm_config else None,
         )
     except OSError as error:  # the share stopped after the check of run_roots() (FEAT-008)
         print(f"ERROR: cannot read the runs ({error})", file=sys.stderr)

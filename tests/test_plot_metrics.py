@@ -128,16 +128,23 @@ def test_largest_difference_by_time():
 
 
 def test_exactly_one(monkeypatch):
-    import types
-
     import sim.runs
 
     found = []
     monkeypatch.setattr(sim.runs, "find_runs", lambda **filters: found)
     with pytest.raises(LookupError, match="found 0"):
         exactly_one(model_point="RACMO_1_1")
-    found.extend([types.SimpleNamespace(folder="a"), types.SimpleNamespace(folder="b")])
-    with pytest.raises(LookupError, match="found 2"):
+    found.extend(
+        [
+            sim.runs.Run("a", {"run_hash": "07752bb5" + "0" * 56, "cfm_config": {"SEB": True}}),
+            sim.runs.Run("b", {"run_hash": "1b5aa766" + "0" * 56, "cfm_config": {"SEB": False}}),
+        ]
+    )
+    # the message gives the cfm_config keys that differ (FEAT-009)
+    with pytest.raises(LookupError, match=r"found 2(.|\n)*SEB \(07752bb5: True, 1b5aa766: False\)"):
+        exactly_one(model_point="RACMO_1_1")
+    found[1] = sim.runs.Run("b", {"run_hash": "1b5aa766" + "0" * 56, "cfm_config": {"SEB": True}})
+    with pytest.raises(LookupError, match="No known cfm_config key differs"):
         exactly_one(model_point="RACMO_1_1")
     found.pop()
     assert exactly_one(model_point="RACMO_1_1").folder == "a"

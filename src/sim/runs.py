@@ -21,14 +21,22 @@ never reads it, so it cannot be out of date for a query.
 The plot and analysis scripts find their runs with the spin_end_year of config.yaml by default, as a different spin-up
 gives different results (FEAT-004). add_spin_end_year_argument() gives them --spin-end-year <year> or any, and
 spin_end_year_filter() the value for find_run.
+
+The cfm_config filter (FEAT-009) finds runs by the value of cfm_config keys, for example cfm_config={"SEB": False}, as
+two runs that differ only in a cfm_config key have different hashes but agree with all the other filters.
+Run.cfm_config_value() gives the value of a key: from cfm_config of the manifest, else from CFM_CONFIG_DEFAULTS, else
+(for a migrated run with no cfm_config) from migrated.inferred_cfm_config. A run whose value is not known (UNKNOWN)
+never agrees with the filter. If two or more runs differ in a known key, find_run() stops with LookupError, as does
+plot.output.exactly_one(), and the message gives the keys that differ (cfm_config_differences).
 """
 
 import argparse
 import glob
+import json
 import logging
 import os
 from dataclasses import dataclass, replace
-from typing import Dict, List, Optional, Set, Tuple, Union
+from typing import Any, Dict, List, Mapping, Optional, Set, Tuple, Union
 
 import pandas as pd
 
@@ -46,6 +54,23 @@ BOTH = "both"
 
 # the meltwater solver of a run whose cfm_config has no meltwater_solver key: the default of the CFM
 DEFAULT_MELTWATER_SOLVER = "enthalpy"
+
+
+class _Unknown:
+    def __repr__(self) -> str:
+        return "unknown"
+
+
+# the value of Run.cfm_config_value for a key that is not known
+UNKNOWN = _Unknown()
+
+# the value that the CFM uses for a key that is not in its JSON. Only the keys with the same default in all the
+# versions of cfm_versions: SEB is False in firn_density_nospin.py of 3e3bf7e-speersm (208-209), ab871c8 and dev
+# (214-215).
+CFM_CONFIG_DEFAULTS: Dict[str, Any] = {"SEB": False}
+
+# cfm_config keys that are paths, not physics (as in sim.manifest): cfm_config_differences does not compare them
+_PATH_CFM_CONFIG_KEYS = ("resultsFolder",)
 
 
 @dataclass(frozen=True)
@@ -92,6 +117,27 @@ class Run:
         DEFAULT_MELTWATER_SOLVER: a run that did not set it, a run of a CFM before 3.2.0 (3e3bf7e has no such key) and
         a migrated run with no cfm_config in its manifest."""
         return (self.manifest.get("cfm_config") or {}).get("meltwater_solver", DEFAULT_MELTWATER_SOLVER)
+
+    def cfm_config_value(self, key: str) -> Any:
+        """The value of a cfm_config key of the run (FEAT-009), or UNKNOWN. The sources, in this sequence: cfm_config
+        of the manifest; CFM_CONFIG_DEFAULTS if cfm_config does not have the key; migrated.inferred_cfm_config if the
+        manifest has no cfm_config (a migrated run without a CFMconfig JSON)."""
+        cfm_config = self.manifest.get("cfm_config")
+        if isinstance(cfm_config, dict):
+            return cfm_config[key] if key in cfm_config else CFM_CONFIG_DEFAULTS.get(key, UNKNOWN)
+        if cfm_config is None:
+            inferred = (self.manifest.get("migrated") or {}).get("inferred_cfm_config") or {}
+            return inferred.get(key, UNKNOWN)
+        return UNKNOWN
+
+    def cfm_config_keys(self) -> Set[str]:
+        """The cfm_config keys with a known value."""
+        cfm_config = self.manifest.get("cfm_config")
+        if isinstance(cfm_config, dict):
+            return set(cfm_config) | set(CFM_CONFIG_DEFAULTS)
+        if cfm_config is None:
+            return set((self.manifest.get("migrated") or {}).get("inferred_cfm_config") or {})
+        return set()
 
     @property
     def start_year(self) -> int:
@@ -172,6 +218,54 @@ class Run:
         }
 
 
+def _json_value(value: Any) -> Any:
+    return json.loads(json.dumps(value))
+
+
+def same_cfm_config_value(a: Any, b: Any) -> bool:
+    """Whether two cfm_config values are equal after a JSON round trip. 1 and 1.0 are equal; True and 1, and True and
+    "true", are not. UNKNOWN is equal to no value."""
+    if a is UNKNOWN or b is UNKNOWN:
+        return False
+    a, b = _json_value(a), _json_value(b)
+    if isinstance(a, bool) or isinstance(b, bool):
+        return isinstance(a, bool) and isinstance(b, bool) and a == b
+    return a == b
+
+
+def cfm_config_differences(runs: List[Run]) -> Dict[str, List[Any]]:
+    """The cfm_config keys whose value differs between the runs, with the value of each run (UNKNOWN for a run that does
+    not know the key). A key differs if two runs that know it have different values; a run that does not know it (a
+    migrated run knows only its inferred keys) is not compared, so that one such run does not hide a difference
+    between the others. The paths (resultsFolder) are not compared."""
+    if len(runs) < 2:
+        return {}
+    keys = set.union(*(run.cfm_config_keys() for run in runs)) - set(_PATH_CFM_CONFIG_KEYS)
+    differences = {}
+    for key in sorted(keys):
+        values = [run.cfm_config_value(key) for run in runs]
+        known = [value for value in values if value is not UNKNOWN]
+        if not all(same_cfm_config_value(known[0], value) for value in known[1:]):
+            differences[key] = values
+    return differences
+
+
+def describe_cfm_config_differences(runs: List[Run]) -> str:
+    """A sentence for the LookupError of find_run and exactly_one: the cfm_config keys that differ between the runs."""
+    differences = cfm_config_differences(runs)
+    if not differences:
+        return (
+            "No known cfm_config key differs between the runs. They possibly differ in a cfm_config key that is not "
+            "known (for example, a migrated run), or in a different item of the run hash."
+        )
+    parts = []
+    for key, values in differences.items():
+        each = ", ".join(f"{run.run_hash[:8]}: {value!r}" for run, value in zip(runs, values))
+        parts.append(f"cfm_config key {key} ({each})")
+    example = ", ".join(f'"{key}": ...' for key in differences)
+    return f"The runs differ in {'; '.join(parts)}. Give cfm_config={{{example}}} to choose."
+
+
 def _site_model_point(site: str, rcm_name: str) -> str:
     from force.model_point import model_point  # reads the RCM grid; imported here, as most queries do not need it
 
@@ -191,6 +285,7 @@ def find_runs(
     cfm: Optional[str] = None,
     run_hash: Optional[str] = None,
     status: Optional[str] = COMPLETE,
+    cfm_config: Optional[Mapping[str, Any]] = None,
     root: Optional[str] = None,
 ) -> List[Run]:
     """The runs that agree with all the filters that are not None, sorted by folder.
@@ -200,7 +295,8 @@ def find_runs(
     without the key agrees with DEFAULT_MELTWATER_SOLVER. spin_end_year is run.spin_end_year of the
     manifest: a run with no spin_end_year (a migrated-1 run, FEAT-004) never agrees with it. cfm is a label in
     cfm_versions. run_hash can be the first characters of the hash. status is "complete" by default; None gives all the
-    runs.
+    runs. cfm_config is {key: value}: the runs whose Run.cfm_config_value(key) is equal to value for each key
+    (same_cfm_config_value); a run whose value is not known never agrees with it (FEAT-009).
 
     root is one run root. If None, the runs in each root of run_roots() (FEAT-008), sorted by folder: the local runs,
     and the share runs. A run hash that agrees with the filters in the two roots gives the local run only, with
@@ -220,6 +316,7 @@ def find_runs(
         cfm=cfm,
         run_hash=run_hash,
         status=status,
+        cfm_config=cfm_config,
     )
     site_tags: dict = {}  # model point of the site, for each RCM, for all the roots
     if root:
@@ -260,6 +357,7 @@ def _find_in_root(
     cfm: Optional[str],
     run_hash: Optional[str],
     status: Optional[str],
+    cfm_config: Optional[Mapping[str, Any]],
 ) -> List[Run]:
     """The runs in one run root that agree with the filters of find_runs, sorted by folder, with this location.
     site_tags is the model point of the site for each RCM, filled in as the RCMs are found."""
@@ -301,6 +399,10 @@ def _find_in_root(
         if any(value is not None and getattr(run, key) != value for key, value in wanted.items()):
             continue
         if run_hash is not None and not run.run_hash.startswith(run_hash):
+            continue
+        if cfm_config is not None and not all(
+            same_cfm_config_value(run.cfm_config_value(key), value) for key, value in cfm_config.items()
+        ):
             continue
         runs.append(run)
     return runs
@@ -346,7 +448,8 @@ def find_run(**filters) -> Run:
 
     If more than one run agrees (for example, runs of one CFM version before and after a change to src/), this gives
     the run that finished last, with a warning that lists the others. Give run_hash to choose a different run. Stops
-    with LookupError if no run agrees.
+    with LookupError if no run agrees, or if the runs differ in a known cfm_config key (for example SEB): then give the
+    cfm_config filter (FEAT-009).
     """
     runs = find_runs(**filters)
     given = ", ".join(f"{key}={value}" for key, value in filters.items() if value is not None)
@@ -361,6 +464,9 @@ def find_run(**filters) -> Run:
         roots = filters.get("root") or " or ".join(run_roots()) or runs_root()
         raise LookupError(f"No run with {given} in {roots}.{hint} Run scripts/run_cfm.py first.")
     runs.sort(key=lambda run: run.finished)
+    if cfm_config_differences(runs):
+        found = "\n".join(f"  {run.folder}" for run in runs)
+        raise LookupError(f"{len(runs)} runs with {given}:\n{found}\n{describe_cfm_config_differences(runs)}")
     if len(runs) > 1:
         def describe(run):
             return (
