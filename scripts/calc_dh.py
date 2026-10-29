@@ -96,6 +96,7 @@ if __name__ == "__main__":
                 end_year=end,
                 spin_end_year=spin_end_year,
                 cfm=cfm,
+                cfm_config={"SEB": True},  # the CFM's own surface energy balance (FEAT-009)
             ).results_file
             results_dict = read_output_data(output_path)
 

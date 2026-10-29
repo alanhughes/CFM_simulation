@@ -146,13 +146,15 @@ class RunOutput:
 
 def exactly_one(**filters):
     """The one complete run that agrees with the filters of sim.runs.find_runs. Raises LookupError if no run or more
-    than one run agrees, so that a figure never takes a run by chance (find_run takes the newest, with a warning)."""
-    from sim.runs import find_runs
+    than one run agrees, so that a figure never takes a run by chance (find_run takes the newest, with a warning).
+    With more than one run, the message gives the cfm_config keys that differ between them (FEAT-009)."""
+    from sim.runs import describe_cfm_config_differences, find_runs
 
     runs = find_runs(**filters)
     if len(runs) != 1:
         found = "\n".join(f"  {run.folder}" for run in runs) or "  (none)"
-        raise LookupError(f"Expected exactly one run for {filters}, found {len(runs)}:\n{found}")
+        hint = f"\n{describe_cfm_config_differences(runs)}" if len(runs) > 1 else ""
+        raise LookupError(f"Expected exactly one run for {filters}, found {len(runs)}:\n{found}{hint}")
     return runs[0]
 
 

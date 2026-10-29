@@ -71,6 +71,7 @@ if __name__ == "__main__":
                 end_year=years.end_year,
                 spin_end_year=spin_end_year,
                 cfm=cfm,
+                cfm_config={"SEB": True},  # the CFM's own surface energy balance (FEAT-009)
             )
             comparison = RunOutput.from_run(run).compare_with_profile(profile, windows)
             profiles.draw_comparison(

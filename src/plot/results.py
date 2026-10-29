@@ -62,6 +62,7 @@ class ResultsPlotter:
                 end_year=self.end_year,
                 spin_end_year=self.spin_end_year,
                 cfm=self.cfm,
+                cfm_config={"SEB": True},  # the CFM's own surface energy balance (FEAT-009)
             ).results_file
             for scheme in self.phys_rho
         ]

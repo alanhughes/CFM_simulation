@@ -546,3 +546,119 @@ def test_share_that_stops_during_the_query(runs, monkeypatch, capsys):
     monkeypatch.setattr(find_runs_script, "find_runs", stops)
     assert find_runs_script.main([]) == 1
     assert "cannot read the runs" in capsys.readouterr().err
+
+
+# the cfm_config filter (FEAT-009): two runs that differ only in a cfm_config key, for example SEB
+
+SEB_TRUE = {"SEB": True, "MELT": True, "SEB_TL_thick": 0.05}
+SEB_FALSE = {"SEB": False, "MELT": True, "SEB_TL_thick": 0.05}
+
+
+def migrate(folder, inferred=None):
+    """Make the run a migrated run with no cfm_config, and with migrated.inferred_cfm_config if inferred is given."""
+    manifest = sim.manifest.read_manifest(folder)
+    manifest["cfm_config"] = None
+    manifest["migrated"] = {"unknown": ["cfm_config"]}
+    if inferred is not None:
+        manifest["migrated"]["inferred_cfm_config"] = inferred
+    write_manifest(folder, manifest)
+
+
+def test_cfm_config_value_sources():
+    run = sim.runs.Run("x", {"cfm_config": {"SEB": True, "MELT": True}})
+    assert run.cfm_config_value("SEB") is True  # 1. cfm_config
+    assert sim.runs.Run("x", {"cfm_config": {"MELT": True}}).cfm_config_value("SEB") is False  # 2. the CFM default
+    assert run.cfm_config_value("SEB_TL_thick") is sim.runs.UNKNOWN  # no default
+    migrated = {"cfm_config": None, "migrated": {"inferred_cfm_config": {"SEB": True}}}
+    assert sim.runs.Run("x", migrated).cfm_config_value("SEB") is True  # 3. inferred
+    assert sim.runs.Run("x", migrated).cfm_config_value("MELT") is sim.runs.UNKNOWN  # 4. not known
+    # a migrated run gives no default: its CFM config is not known
+    assert sim.runs.Run("x", {"cfm_config": None, "migrated": {}}).cfm_config_value("SEB") is sim.runs.UNKNOWN
+    assert sim.runs.Run("x", {}).cfm_config_value("SEB") is sim.runs.UNKNOWN
+
+
+def test_cfm_config_values_are_compared_after_a_json_round_trip():
+    same = sim.runs.same_cfm_config_value
+    assert same(1, 1.0) and same(0.05, 0.05) and same([1, 2], (1, 2)) and same(False, False)
+    assert not same(True, 1) and not same(True, "true") and not same(False, 0) and not same(1, 2)
+    assert not same(sim.runs.UNKNOWN, sim.runs.UNKNOWN)
+
+
+def test_cfm_config_filter(runs):
+    seb_true = make_run("RACMO_261_126", hash_="1" * 64, cfm_config=SEB_TRUE)
+    seb_false = make_run("RACMO_261_126", hash_="2" * 64, cfm_config=SEB_FALSE)
+    default = make_run("RACMO_261_126", hash_="3" * 64, cfm_config={"MELT": True})  # SEB false by default
+    filters = dict(model_point="RACMO_261_126", physRho="GSFC2020", cfm="ab871c8")
+    assert folders(find_runs(cfm_config={"SEB": True}, **filters)) == [seb_true]
+    assert folders(find_runs(cfm_config={"SEB": False}, **filters)) == sorted([seb_false, default])
+    assert folders(find_runs(cfm_config={"SEB": False, "SEB_TL_thick": 0.05}, **filters)) == [seb_false]
+    assert folders(find_runs(cfm_config={"SEB_TL_thick": 0.05}, **filters)) == sorted([seb_true, seb_false])
+    # no filter: all the runs, as before; runs["gsfc"] has no cfm_config, so it agrees with no cfm_config filter
+    assert folders(find_runs(**filters)) == sorted([runs["gsfc"], seb_true, seb_false, default])
+    assert folders(find_runs(cfm_config={}, **filters)) == folders(find_runs(**filters))
+
+
+def test_cfm_config_filter_in_the_share_root(share, runs):
+    local = make_run("RACMO_261_126", hash_="1" * 64, cfm_config=SEB_TRUE)
+    on_share = make_share_run(share, "RACMO_261_126", hash_="2" * 64, cfm_config=SEB_FALSE)
+    make_share_run(share, "RACMO_261_126", hash_="1" * 64, cfm_config=SEB_TRUE)  # also local
+    (run,) = find_runs(cfm_config={"SEB": False})
+    assert (run.folder, run.location) == (on_share, "share")
+    (run,) = find_runs(cfm_config={"SEB": True})
+    assert (run.folder, run.location) == (local, "both")
+
+
+def test_cfm_config_filter_of_migrated_runs(runs):
+    inferred = make_run("RACMO_261_126", cfm="3e3bf7e-speersm", hash_="1" * 64)
+    migrate(inferred, {"SEB": True})
+    migrate(runs["old_cfm"])  # no inferred value
+    old = dict(model_point="RACMO_261_126", cfm="3e3bf7e-speersm")
+    assert folders(find_runs(cfm_config={"SEB": True}, **old)) == [inferred]
+    assert find_runs(cfm_config={"SEB": False}, **old) == []
+    assert find_runs(cfm_config={"MELT": True}, **old) == []  # MELT is not known
+    assert len(find_runs(**old)) == 2
+
+
+def test_find_run_stops_if_the_runs_differ_in_a_cfm_config_key(runs):
+    make_run("RACMO_261_126", hash_="1" * 64, cfm_config=SEB_TRUE)
+    seb_false = make_run("RACMO_261_126", hash_="2" * 64, cfm_config=SEB_FALSE, finished="2026-10-17T10:00:00")
+    filters = dict(model_point="RACMO_261_126", physRho="GSFC2020", cfm="ab871c8")
+    with pytest.raises(LookupError, match=r"cfm_config key SEB \(11111111: True, aaaaaaaa: unknown, 22222222: False\)"):
+        find_run(**filters)
+    assert find_run(cfm_config={"SEB": False}, **filters).folder == seb_false
+
+
+def test_find_run_gives_the_newest_if_no_known_key_differs(runs, caplog):
+    make_run("RACMO_261_126", hash_="1" * 64, cfm_config=SEB_TRUE)
+    later = make_run("RACMO_261_126", hash_="2" * 64, cfm_config=dict(SEB_TRUE), finished="2026-10-17T10:00:00")
+    migrated = make_run("RACMO_261_126", hash_="3" * 64, cfm_config=SEB_FALSE)
+    migrate(migrated)  # SEB not known: it is not compared
+    assert find_run(model_point="RACMO_261_126", physRho="GSFC2020", cfm="ab871c8").folder == later
+    assert "4 runs" in caplog.text
+
+
+def test_cfm_config_differences_ignores_the_runs_that_do_not_know_a_key():
+    a = sim.runs.Run("a", {"run_hash": "a" * 64, "cfm_config": {"SEB": True, "MELT": True, "resultsFolder": "a"}})
+    b = sim.runs.Run("b", {"run_hash": "b" * 64, "cfm_config": {"SEB": True, "MELT": False, "resultsFolder": "b"}})
+    m = sim.runs.Run("m", {"run_hash": "c" * 64, "cfm_config": None, "migrated": {"inferred_cfm_config": {"SEB": False}}})
+    assert sim.runs.cfm_config_differences([a, b]) == {"MELT": [True, False]}  # not resultsFolder
+    unknown = sim.runs.UNKNOWN
+    assert sim.runs.cfm_config_differences([a, b, m]) == {"MELT": [True, False, unknown], "SEB": [True, True, False]}
+    assert sim.runs.cfm_config_differences([a, m]) == {"SEB": [True, False]}  # MELT is known for a only
+    assert sim.runs.cfm_config_differences([a, sim.runs.Run("n", {"cfm_config": None})]) == {}
+    assert sim.runs.cfm_config_differences([a]) == {}
+    assert "not known" in sim.runs.describe_cfm_config_differences([a, a])
+
+
+def test_find_runs_script_cfm_config(runs, capsys):
+    make_run("RACMO_261_126", hash_="1" * 64, cfm_config=SEB_TRUE)
+    make_run("RACMO_261_126", hash_="2" * 64, cfm_config=SEB_FALSE)
+    assert find_runs_script.main(["--cfm-config", "SEB=false"]) == 0
+    out = capsys.readouterr().out
+    assert "22222222" in out and "11111111" not in out and "1 runs." in out
+    assert find_runs_script.main(["--cfm-config", "SEB=true", "--cfm-config", "SEB_TL_thick=0.05"]) == 0
+    assert "11111111" in capsys.readouterr().out
+    assert find_runs_script.cfm_config_item("meltwater_solver=ncz") == ("meltwater_solver", "ncz")
+    assert find_runs_script.cfm_config_item("SEB_TL_thick=0.05") == ("SEB_TL_thick", 0.05)
+    with pytest.raises(SystemExit):
+        find_runs_script.main(["--cfm-config", "SEB"])

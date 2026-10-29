@@ -36,6 +36,11 @@ the site now. find_runs(site=...) does not give these runs; use find_runs(model_
 
 Each source has a CFM label, which the user gives, because the old folders do not record the CFM version.
 
+An old folder with no CFMconfig JSON has no cfm_config, but the form of its CFMforcing.hdf5 gives SEB (infer_cfm_config,
+FEAT-009). The manifest records it in migrated.inferred_cfm_config, and the indicator in migrated.inferred_from, so that
+find_runs(cfm_config={"SEB": ...}) can find the run. cfm_config stays in migrated.unknown, as the other keys are not
+known, and the migrated hash does not contain the inferred value.
+
 Usage:
     python scripts/migrate_runs.py --source 3e3bf7e-speersm ~/luna/CPOM/speersm/CFM_data/cfm_output \\
         --source ab871c8 ~/CFM_data/ab871c8/cfm_output                     # dry run (the default)
@@ -115,6 +120,7 @@ class RunPlan:
     forcing_sha256: Optional[str] = None
     model_point: Optional[ModelPoint] = None
     spin: Optional[dict] = None  # measure_spin() of CFMforcing.hdf5, None if it is not measured
+    inferred_cfm_config: dict = field(default_factory=dict)  # infer_cfm_config(), for a folder with no cfm_config
     files: List[str] = field(default_factory=list)
     size: int = 0
     finished: str = ""
@@ -210,6 +216,32 @@ def measure_spin(path: str, start_year: int) -> Optional[dict]:
     return None
 
 
+# the indicator in CFMforcing.hdf5 of each value of SEB: forcing_writer (CFM_main/writer.py) writes the group SEB if
+# SEB is true, and main/SMELT (the melt of the RCM) if SEB is false. The same in 3e3bf7e-speersm and ab871c8.
+SEB_INDICATORS = {
+    True: "CFMforcing.hdf5: group SEB, no main/SMELT",
+    False: "CFMforcing.hdf5: main/SMELT, no group SEB",
+}
+
+
+def infer_cfm_config(folder: str) -> dict:
+    """The cfm_config keys of an old run that its files give (FEAT-009): {"SEB": True} if CFMforcing.hdf5 has the group
+    SEB and no main/SMELT, {"SEB": False} if it has main/SMELT and no group SEB, else {} (the two indicators do not
+    agree, or the file cannot be read). Use it for migrated runs only: forcing_writer can change in a CFM version."""
+    try:
+        with h5py.File(os.path.join(folder, "CFMforcing.hdf5"), "r") as file:
+            seb_group = isinstance(file.get("SEB"), h5py.Group)
+            smelt = isinstance(file.get("main/SMELT"), h5py.Dataset)
+    except OSError:
+        return {}
+    return {"SEB": seb_group} if seb_group != smelt else {}
+
+
+def inferred_from(inferred: dict) -> dict:
+    """The indicator of each key of infer_cfm_config(), for migrated.inferred_from."""
+    return {key: SEB_INDICATORS[value] for key, value in inferred.items() if key == "SEB"}
+
+
 def migrated_hash_inputs(plan: RunPlan) -> dict:
     """The document of the migrated run hash: the items of an old run that are known. See the module docstring."""
     cfm_config = None
@@ -289,6 +321,9 @@ def plan_folder(path: str, label: str, site_by_coords: dict) -> Optional[RunPlan
     if plan.spin is None:
         plan.notes.append("the spin-up is not measured: CFMforcing.hdf5 has no spin-up of whole blocks, or cannot be read")
 
+    if plan.cfm_config is None:
+        plan.inferred_cfm_config = infer_cfm_config(path)
+
     plan.hash_inputs = migrated_hash_inputs(plan)
     plan.run_hash = run_hash(plan.hash_inputs)
     plan.target = run_folder(plan.model_point.tag, plan.physRho, plan.liquid, plan.start, plan.end, label, plan.run_hash)
@@ -355,6 +390,9 @@ def migrated_manifest(plan: RunPlan) -> dict:
             "unknown": ["cfm identity (commit, patch, environment)", "wrapper code"]
             + [key for key in WRAPPER_PARAMS if key not in known]
             + ([] if plan.cfm_config is not None else ["cfm_config"]),
+            # the cfm_config keys that the files give, for a folder with no cfm_config (infer_cfm_config, FEAT-009)
+            "inferred_cfm_config": plan.inferred_cfm_config,
+            "inferred_from": inferred_from(plan.inferred_cfm_config),
             # the values of measure_spin() other than spin_end_year, which is in run.spin_end_year
             "spin": None
             if plan.spin is None
