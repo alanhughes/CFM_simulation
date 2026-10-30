@@ -66,8 +66,13 @@ UNKNOWN = _Unknown()
 
 # the value that the CFM uses for a key that is not in its JSON. Only the keys with the same default in all the
 # versions of cfm_versions: SEB is False in firn_density_nospin.py of 3e3bf7e-speersm (208-209), ab871c8 and dev
-# (214-215).
-CFM_CONFIG_DEFAULTS: Dict[str, Any] = {"SEB": False}
+# (214-215). meltwater_solver is 'enthalpy' in firn_density_nospin.py of ab871c8, dev and r1m (345-348), and 3e3bf7e
+# has only the enthalpy solver (DEFAULT_MELTWATER_SOLVER).
+CFM_CONFIG_DEFAULTS: Dict[str, Any] = {"SEB": False, "meltwater_solver": DEFAULT_MELTWATER_SOLVER}
+
+# the defaults that also apply to a migrated run with no cfm_config, as in Run.meltwater_solver. SEB is not one: it
+# can be either value in a migrated run, so it comes from migrated.inferred_cfm_config only.
+MIGRATED_CFM_CONFIG_DEFAULTS: Dict[str, Any] = {"meltwater_solver": DEFAULT_MELTWATER_SOLVER}
 
 # cfm_config keys that are paths, not physics (as in sim.manifest): cfm_config_differences does not compare them
 _PATH_CFM_CONFIG_KEYS = ("resultsFolder",)
@@ -120,14 +125,14 @@ class Run:
 
     def cfm_config_value(self, key: str) -> Any:
         """The value of a cfm_config key of the run (FEAT-009), or UNKNOWN. The sources, in this sequence: cfm_config
-        of the manifest; CFM_CONFIG_DEFAULTS if cfm_config does not have the key; migrated.inferred_cfm_config if the
-        manifest has no cfm_config (a migrated run without a CFMconfig JSON)."""
+        of the manifest; CFM_CONFIG_DEFAULTS if cfm_config does not have the key; migrated.inferred_cfm_config, then
+        MIGRATED_CFM_CONFIG_DEFAULTS, if the manifest has no cfm_config (a migrated run without a CFMconfig JSON)."""
         cfm_config = self.manifest.get("cfm_config")
         if isinstance(cfm_config, dict):
             return cfm_config[key] if key in cfm_config else CFM_CONFIG_DEFAULTS.get(key, UNKNOWN)
         if cfm_config is None:
             inferred = (self.manifest.get("migrated") or {}).get("inferred_cfm_config") or {}
-            return inferred.get(key, UNKNOWN)
+            return inferred[key] if key in inferred else MIGRATED_CFM_CONFIG_DEFAULTS.get(key, UNKNOWN)
         return UNKNOWN
 
     def cfm_config_keys(self) -> Set[str]:
@@ -136,7 +141,8 @@ class Run:
         if isinstance(cfm_config, dict):
             return set(cfm_config) | set(CFM_CONFIG_DEFAULTS)
         if cfm_config is None:
-            return set((self.manifest.get("migrated") or {}).get("inferred_cfm_config") or {})
+            inferred = (self.manifest.get("migrated") or {}).get("inferred_cfm_config") or {}
+            return set(inferred) | set(MIGRATED_CFM_CONFIG_DEFAULTS)
         return set()
 
     @property

@@ -135,7 +135,7 @@ def test_find_run_gives_the_last_finished(runs, caplog):
         find_run(physRho="Ligtenberg2011")
 
 
-def test_meltwater_solver(runs, caplog):
+def test_meltwater_solver(runs):
     ncz = make_run("RACMO_261_126", hash_="8" * 64, finished="2026-10-17T10:00:00",
                    cfm_config={"meltwater_solver": "ncz"})
     no_key = make_run("RACMO_261_126", hash_="7" * 64, cfm_config={"physRho": "GSFC2020"})
@@ -144,9 +144,10 @@ def test_meltwater_solver(runs, caplog):
     assert folders(find_runs(meltwater_solver="enthalpy", **filters)) == sorted([runs["gsfc"], no_key])
     assert folders(find_runs(meltwater_solver="ncz", **filters)) == [ncz]
     assert len(find_runs(**filters)) == 3
-    # find_run gives the solver of each run in its warning
-    assert find_run(**filters).folder == ncz
-    assert "ncz" in caplog.text and "enthalpy" in caplog.text
+    # the runs differ in meltwater_solver, as the runs without the key are enthalpy (FEAT-009), so find_run stops
+    with pytest.raises(LookupError, match="cfm_config key meltwater_solver"):
+        find_run(**filters)
+    assert find_run(meltwater_solver="ncz", **filters).folder == ncz
     table = runs_table(find_runs(**filters))
     assert sorted(table["meltwater_solver"]) == ["enthalpy", "enthalpy", "ncz"]
 
@@ -572,7 +573,7 @@ def test_cfm_config_value_sources():
     migrated = {"cfm_config": None, "migrated": {"inferred_cfm_config": {"SEB": True}}}
     assert sim.runs.Run("x", migrated).cfm_config_value("SEB") is True  # 3. inferred
     assert sim.runs.Run("x", migrated).cfm_config_value("MELT") is sim.runs.UNKNOWN  # 4. not known
-    # a migrated run gives no default: its CFM config is not known
+    # a migrated run gives no SEB default: its CFM config is not known
     assert sim.runs.Run("x", {"cfm_config": None, "migrated": {}}).cfm_config_value("SEB") is sim.runs.UNKNOWN
     assert sim.runs.Run("x", {}).cfm_config_value("SEB") is sim.runs.UNKNOWN
 
@@ -617,6 +618,20 @@ def test_cfm_config_filter_of_migrated_runs(runs):
     assert find_runs(cfm_config={"SEB": False}, **old) == []
     assert find_runs(cfm_config={"MELT": True}, **old) == []  # MELT is not known
     assert len(find_runs(**old)) == 2
+
+
+def test_a_run_without_meltwater_solver_is_enthalpy(runs):
+    # as Run.meltwater_solver: the cfm_config filter and find_run use the default of the CFM for a run without the key
+    for manifest in ({"cfm_config": {"MELT": True}}, {"cfm_config": None, "migrated": {}}):
+        run = sim.runs.Run("x", manifest)
+        assert run.cfm_config_value("meltwater_solver") == run.meltwater_solver == "enthalpy"
+    enthalpy = make_run("RACMO_261_126", hash_="1" * 64, cfm_config=SEB_TRUE)
+    ncz = make_run("RACMO_261_126", hash_="2" * 64, cfm_config={**SEB_TRUE, "meltwater_solver": "ncz"})
+    filters = dict(model_point="RACMO_261_126", physRho="GSFC2020", cfm="ab871c8", cfm_config={"SEB": True})
+    assert folders(find_runs(**{**filters, "cfm_config": {"SEB": True, "meltwater_solver": "enthalpy"}})) == [enthalpy]
+    with pytest.raises(LookupError, match=r"cfm_config key meltwater_solver \(11111111: 'enthalpy', 22222222: 'ncz'\)"):
+        find_run(**filters)
+    assert find_run(**{**filters, "cfm_config": {"SEB": True, "meltwater_solver": "ncz"}}).folder == ncz
 
 
 def test_find_run_stops_if_the_runs_differ_in_a_cfm_config_key(runs):
