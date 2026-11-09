@@ -234,15 +234,8 @@ cfm_config:
   timesetup_options: [exact,interp,retmip]
   liquid: bucket
   liquid_options: [bucket,darcy]   # the schemes that the wrapper runs (sim.manifest.LIQUID_SCHEMES)
-  # darcy has its own options. A key that is not here takes the CFM default (below), and the CFM prints one line for
-  # it. Each key that is here goes in the run hash, so to add one changes the hash of the bucket runs too.
-  # darcy also ignores keep_firnthickness, and reads RhoImp_darcy, ThickImp_darcy and slope_proxy_darcy, not
-  # RhoImp, ThickImp and Slope. Before the year 1980 of the model, a darcy run uses the bucket scheme.
-  # Ksat_darcy: Calonne              # [Calonne, power_law]
-  # Ksat_k0_darcy: 5.56e-11          # [m2], power_law only
-  # viscosity_darcy: 0.001792        # [Pa s]
-  # krel_darcy: vanGenuchten         # [vanGenuchten, power_law]
-  # krel_exponent_darcy: 2.0         # power_law only
+  # the options of one scheme only (such as the darcy options) go in cfm_config_by_liquid, below, not here. Each key
+  # here goes in the hash of every run, so a key here changes the hash of the runs of every scheme
   merging: false
   merge_min: 1e-4
   LWCcorrect: false
@@ -277,6 +270,22 @@ cfm_config:
   s_zero_rho: 200
   SEB: true
   RAIN: true
+
+# the cfm_config keys of one liquid scheme. A run of that scheme gets cfm_config with its section added on top; a run
+# of another scheme does not get the section. So a key here is in the run hash of that scheme only: to add, change or
+# remove a darcy key gives new darcy runs, and the bucket runs keep their hashes. A key that is in cfm_config too takes
+# the value of the section. A section must not set liquid, physRho or resultsFolder, which the wrapper sets. Optional:
+# without it, each run gets cfm_config as it is.
+cfm_config_by_liquid:
+  darcy:
+    # a darcy key that is not here takes the CFM default (below), and the CFM prints one line for it. darcy reads
+    # RhoImp_darcy, ThickImp_darcy and slope_proxy_darcy, not RhoImp, ThickImp and Slope. Before bucket_until_year
+    # (CFM default 1980) a darcy run uses the bucket scheme, so the bucket keys stay in cfm_config
+    # Ksat_darcy: Calonne              # [Calonne, power_law]
+    # Ksat_k0_darcy: 5.56e-11          # [m2], power_law only
+    # viscosity_darcy: 0.001792        # [Pa s]
+    # krel_darcy: vanGenuchten         # [vanGenuchten, power_law]
+    # krel_exponent_darcy: 2.0         # power_law only
 
 ### ----------------- Plotting ----------------- ###
 thickness_change_range: [2000, 2000.25] # Range of model time to plot for change in firn thickness (in years)
