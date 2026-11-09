@@ -193,6 +193,34 @@ def test_a_change_gives_a_new_run(data_path, cfm_calls, identities, monkeypatch,
     assert os.path.dirname(cfm_calls[0]) == os.path.dirname(cfm_calls[1])
 
 
+def darcy_run(**cfm_config) -> CFMRun:
+    """A darcy run of SITE, with the darcy options cfm_config added to cfm_config of config.yaml."""
+    config["cfm_config"].update(cfm_config)
+    return CFMRun(*SITE[:4], "darcy", VERSION)
+
+
+def test_darcy_run_folder(data_path):
+    parts = os.path.relpath(darcy_run().prepare(), data_path).split(os.sep)
+    assert parts[:4] == ["runs", "RACMO_261_126", "GSFC2020_darcy_1979-2024", "test"]
+
+
+def test_darcy_options_are_in_the_run_hash(data_path):
+    """Two darcy runs that differ only in Ksat_darcy have the same <physRho>_<liquid> folder and different hashes."""
+    calonne = darcy_run(Ksat_darcy="Calonne").prepare()
+    power_law = darcy_run(Ksat_darcy="power_law").prepare()
+    assert os.path.dirname(calonne) == os.path.dirname(power_law)
+    assert calonne != power_law
+
+
+def test_bucket_and_darcy_are_different_runs(data_path):
+    assert os.path.dirname(os.path.dirname(folder())) != os.path.dirname(os.path.dirname(darcy_run().prepare()))
+
+
+def test_other_liquid_scheme_is_refused(data_path):
+    with pytest.raises(ValueError, match="bucket, darcy"):
+        CFMRun(*SITE[:4], "resingledomain", VERSION)
+
+
 @pytest.mark.parametrize(
     "change",
     [

@@ -233,7 +233,16 @@ cfm_config:
   timesetup: exact
   timesetup_options: [exact,interp,retmip]
   liquid: bucket
-  liquid_options: [percolation_bucket,bucketVV,resingledomain,prefsnowpack]
+  liquid_options: [bucket,darcy]   # the schemes that the wrapper runs (sim.manifest.LIQUID_SCHEMES)
+  # darcy has its own options. A key that is not here takes the CFM default (below), and the CFM prints one line for
+  # it. Each key that is here goes in the run hash, so to add one changes the hash of the bucket runs too.
+  # darcy also ignores keep_firnthickness, and reads RhoImp_darcy, ThickImp_darcy and slope_proxy_darcy, not
+  # RhoImp, ThickImp and Slope. Before the year 1980 of the model, a darcy run uses the bucket scheme.
+  # Ksat_darcy: Calonne              # [Calonne, power_law]
+  # Ksat_k0_darcy: 5.56e-11          # [m2], power_law only
+  # viscosity_darcy: 0.001792        # [Pa s]
+  # krel_darcy: vanGenuchten         # [vanGenuchten, power_law]
+  # krel_exponent_darcy: 2.0         # power_law only
   merging: false
   merge_min: 1e-4
   LWCcorrect: false

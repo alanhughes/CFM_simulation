@@ -19,7 +19,9 @@ from sim.identity import check_cfm_identity, check_wrapper_identity, measure_cfm
 from sim.manifest import (
     COMPLETE,
     FAILED,
+    LIQUID_SCHEMES,
     RUNNING,
+    LiquidScheme,
     WRAPPER_PARAMS,
     is_alive,
     now,
@@ -88,7 +90,7 @@ class CFMRun:
         borehole_lon: float,
         physRho: str,
         rcm_name: Literal["MAR", "RACMO"],
-        liquid: Literal["bucket"],
+        liquid: LiquidScheme,
         cfm_version: dict | None = None,
         force: bool = False,
         site: str | None = None,
@@ -105,7 +107,8 @@ class CFMRun:
             borehole_lon (float): Longitude of borehole location.
             physRho (str): Physical densification scheme to use in CFM model.
             rcm_name (Literal["MAR", "RACMO"]): RCM name to use for forcing data (e.g., MAR or RACMO).
-            liquid (Literal["bucket"]): meltwater scheme to use (currently only bucket)
+            liquid (LiquidScheme): meltwater scheme to use, one of LIQUID_SCHEMES ("bucket" or "darcy"). Stops with
+                ValueError for a different value
             cfm_version (dict | None): CFM version from cfm_config.cfm_version(), default_cfm_version if None. This
                 process must be running that version's python.
             force (bool): rerun even if a complete run exists in the output folder.
@@ -130,6 +133,8 @@ class CFMRun:
         self._force_data_path: str = None
 
         # also set the liquid scheme in the config
+        if liquid not in LIQUID_SCHEMES:
+            raise ValueError(f"liquid must be one of {', '.join(LIQUID_SCHEMES)}, not {liquid!r}.")
         self._cfm_config["liquid"] = liquid
 
         self._force: bool = force
