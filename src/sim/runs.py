@@ -79,8 +79,8 @@ CFM_DEFAULT = _CfmDefault()
 # the value that the CFM uses for a key that is not in its JSON. Only the keys with the same default in all the
 # versions of cfm_versions: SEB is False in firn_density_nospin.py of 3e3bf7e-speersm (208-209), ab871c8 and dev
 # (214-215). meltwater_solver is 'enthalpy' in firn_density_nospin.py of ab871c8, dev and r1m (345-348). 3e3bf7e has no
-# meltwater_solver key: LWC_heat selects the solver there, and it has only the enthalpy solver
-# (DEFAULT_MELTWATER_SOLVER).
+# meltwater_solver key: LWC_heat selects the solver there, and a run that does not set LWC_heat uses the enthalpy
+# solver (DEFAULT_MELTWATER_SOLVER).
 CFM_CONFIG_DEFAULTS: Dict[str, Any] = {"SEB": False, "meltwater_solver": DEFAULT_MELTWATER_SOLVER}
 
 # the defaults that also apply to a migrated run with no cfm_config, as in Run.meltwater_solver. SEB is not one: it
