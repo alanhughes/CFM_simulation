@@ -467,6 +467,23 @@ class CFMRun:
         self._force_data = pd.read_csv(self._force_data_path, index_col=0, parse_dates=True)
         logging.info(f"Forcing data read from {self._force_data_path}.")
 
+    def _record_cfm_settings(self, firn) -> None:
+        """Add cfm_config_used (the config dictionary of the CFM, firn.c, after it loaded the config) and, for a darcy
+        run, cfm_darcy_defaults (melt._DARCY_DEFAULTS of the CFM that ran) to the manifest, for a person to read and for
+        Run.cfm_config_value (FEAT-010). cfm_config is not changed. A failure is a warning: it does not fail the run."""
+        try:
+            used = json.loads(json.dumps(firn.c, default=str))
+            darcy_defaults = None
+            if self._cfm_config["liquid"] == "darcy":
+                darcy_defaults = getattr(sys.modules.get("melt"), "_DARCY_DEFAULTS", None)  # melt of import_cfm
+                if darcy_defaults is not None:
+                    darcy_defaults = json.loads(json.dumps(darcy_defaults, default=str))
+            self._manifest["cfm_config_used"] = used
+            if darcy_defaults is not None:
+                self._manifest["cfm_darcy_defaults"] = darcy_defaults
+        except Exception as error:
+            logging.warning(f"The settings of the CFM are not in the manifest: {error!r}")
+
     def _run_cfm(self) -> None:
         """Run the CFM model using the forcing data and configuration.
         This code is mostly copied from main.py in the CFM repository.
@@ -517,3 +534,4 @@ class CFMRun:
             SEBfluxes=SEBfluxes,
         )
         firn.time_evolve()
+        self._record_cfm_settings(firn)

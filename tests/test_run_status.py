@@ -13,6 +13,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 import sim.manifest
@@ -144,6 +145,66 @@ def test_cfm_config_json_is_in_the_run_folder(data_path, monkeypatch):
     assert seen["config"] == os.path.join(folder(), "CFMconfig.json")
     assert sorted(os.listdir(folder())) == ["CFMconfig.json", "manifest.json", "run.log"]
     assert read_manifest(folder())["cfm_config"]["resultsFolder"] == folder()
+
+
+def fake_cfm(monkeypatch, config_used, darcy_defaults="absent"):
+    """Stub the CFM for the real _run_cfm: a FirnDensityNoSpin whose c is config_used, and a melt module in sys.modules
+    with _DARCY_DEFAULTS (not if darcy_defaults is "absent")."""
+
+    class Firn:
+        c = config_used
+
+        def __init__(self, config_path, **kwargs):
+            pass
+
+        def time_evolve(self):
+            pass
+
+    melt = type(sys)("melt")
+    if darcy_defaults != "absent":
+        melt._DARCY_DEFAULTS = darcy_defaults
+    monkeypatch.setitem(sys.modules, "melt", melt)
+    monkeypatch.setattr(sim.run, "import_cfm", lambda repo: (lambda *a, **k: ({"SUBLIM": 1.0}, 12.0, 5.0, 10.0, 100.0, None), Firn))
+
+
+def test_run_records_the_cfm_config_used(data_path, monkeypatch):
+    """FEAT-010: cfm_config_used is firn.c; cfm_config and the run hash do not change; a bucket run has no darcy table."""
+    fake_cfm(monkeypatch, {"liquid": "bucket", "Ksat_darcy": "Calonne", "arr": np.array([1, 2])}, {"IrrVal": 0.02})
+    run = new_run()
+    run.run()
+    manifest = read_manifest(folder())
+    assert manifest["status"] == COMPLETE
+    assert manifest["cfm_config_used"] == {"liquid": "bucket", "Ksat_darcy": "Calonne", "arr": "[1 2]"}
+    assert "cfm_darcy_defaults" not in manifest
+    assert "Ksat_darcy" not in manifest["cfm_config"]
+    assert manifest["run_hash"] == run._run_hash == run_hash()
+
+
+def test_darcy_run_records_the_darcy_defaults(data_path, monkeypatch):
+    fake_cfm(monkeypatch, {"liquid": "darcy"}, {"IrrVal": 0.02, "Ksat_darcy": "Calonne"})
+    darcy_run().run()
+    manifest = read_manifest(darcy_run().prepare())
+    assert manifest["cfm_darcy_defaults"] == {"IrrVal": 0.02, "Ksat_darcy": "Calonne"}
+    assert manifest["cfm_config_used"] == {"liquid": "darcy"}
+
+
+def test_darcy_run_of_a_cfm_without_the_table_has_no_darcy_defaults(data_path, monkeypatch):
+    fake_cfm(monkeypatch, {"liquid": "darcy"})
+    darcy_run().run()
+    manifest = read_manifest(darcy_run().prepare())
+    assert manifest["status"] == COMPLETE and "cfm_config_used" in manifest
+    assert "cfm_darcy_defaults" not in manifest
+
+
+def test_a_record_that_fails_is_a_warning_not_a_failed_run(data_path, monkeypatch, caplog):
+    config_used = {}
+    config_used["self"] = config_used  # json.dumps raises ValueError
+    fake_cfm(monkeypatch, config_used)
+    new_run().run()
+    manifest = read_manifest(folder())
+    assert manifest["status"] == COMPLETE
+    assert "cfm_config_used" not in manifest
+    assert "settings of the CFM are not in the manifest" in caplog.text
 
 
 def test_sites_are_recorded(data_path, cfm_calls):
