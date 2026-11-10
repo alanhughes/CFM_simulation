@@ -10,6 +10,7 @@ from force.model_point import model_point_label, shared_model_points
 from force.years import run_years
 from plot import style
 from plot.output import RunOutput
+from sim.manifest import LiquidScheme
 from sim.runs import find_run, spin_end_year_filter
 
 logging.basicConfig(level=logging.INFO)
@@ -21,7 +22,7 @@ class ResultsPlotter:
         site: str,
         phys_rho: List[str],
         rcm_name: Literal["RACMO", "MAR"],
-        liquid: Literal["bucket"],
+        liquid: LiquidScheme,
         cfm: str | None = None,
         start_year: int | None = None,
         end_year: int | None = None,
@@ -32,7 +33,7 @@ class ResultsPlotter:
             site (str): Site name in sites.yaml. The runs are those of its model point (FEAT-001, FEAT-002)
             phys_rho (List[str]): List of physical densification schemes to plot
             rcm_name (Literal["RACMO", "MAR"]): RCM name to use for forcing data (e.g., MAR or RACMO)
-            liquid (Literal["bucket"]): Meltwater scheme to use (currently only bucket)
+            liquid (LiquidScheme): Meltwater scheme of the runs, "bucket" or "darcy"
             cfm (str | None): Label of the CFM version (default_cfm_version if None)
             start_year, end_year (int | None): the years of the runs, used as they are. None: the years of
                 force.years.run_years for rcm_name, as scripts/run_cfm.py uses (DISC-001)
@@ -44,7 +45,7 @@ class ResultsPlotter:
         self.cfm: str = cfm_version(cfm)["label"]
         self.phys_rho: List[str] = phys_rho
         self.rcm_name: Literal["RACMO", "MAR"] = rcm_name
-        self.liquid: Literal["bucket"] = liquid
+        self.liquid: LiquidScheme = liquid
         years = run_years(rcm_name, start_year, end_year)
         self.start_year: int = years.start_year
         self.end_year: int = years.end_year

@@ -38,6 +38,7 @@ import sim
 from cfm_config import Site, cfm_version, config, get_site
 from force.process import ProcessMAR, ProcessRACMO, ProcessRACMO23
 from force.years import RunYears, add_year_arguments, run_years, set_config_years
+from sim.manifest import LIQUID_SCHEMES
 from sim.identity import check_cfm_identity, check_wrapper_identity, measure_cfm_identity, wrapper_identity
 
 logging.basicConfig(level=logging.INFO)
@@ -63,7 +64,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--site", type=str, help="Site name in sites.yaml (default: default_site in config.yaml)")
     parser.add_argument("--physrho", type=str, help="Physical densification scheme")
     parser.add_argument("--rcm", type=str, help="RCM name to use for forcing data (e.g., MAR or RACMO)")
-    parser.add_argument("--liquid", type=str, help="Meltwater scheme to use (currently only bucket)")
+    parser.add_argument("--liquid", type=str, choices=LIQUID_SCHEMES, help="Meltwater scheme to use")
     parser.add_argument("--force", action="store_true", help="Rerun the CFM even if a complete run exists")
     parser.add_argument(
         "--cfm", type=str, help="CFM version (a label in cfm_versions); default_cfm_version if not given"

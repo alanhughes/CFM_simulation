@@ -23,6 +23,7 @@ import os
 import socket
 import stat
 from datetime import datetime, timezone
+from typing import Literal, get_args
 
 from cfm_config import config, share_data_path
 
@@ -47,6 +48,11 @@ _UNHASHED_CFM_CONFIG_KEYS = ("resultsFolder",)
 _HASHED_CFM_IDENTITY_KEYS = ("commit", "code_diff_sha256", "python_version", "pip_freeze")
 
 HASH_LENGTH = 8
+
+# the values of cfm_config.liquid (the CFM meltwater scheme) that the wrapper runs. One scheme for each run. The darcy
+# options (Ksat_darcy, krel_darcy, ...) are cfm_config keys, so they are in the run hash but not in the run folder name
+LiquidScheme = Literal["bucket", "darcy"]
+LIQUID_SCHEMES: tuple[str, ...] = get_args(LiquidScheme)
 
 
 def run_hash_inputs(

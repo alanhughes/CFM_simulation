@@ -13,11 +13,12 @@ import subprocess
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 import sim.manifest
 import sim.run
-from cfm_config import config
+from cfm_config import ConfigError, config
 from force.cache import forcing_csv_path, forcing_json_path
 from force.model_point import ModelPoint
 from sim.manifest import COMPLETE, FAILED, RUNNING, read_manifest, write_manifest
@@ -146,6 +147,66 @@ def test_cfm_config_json_is_in_the_run_folder(data_path, monkeypatch):
     assert read_manifest(folder())["cfm_config"]["resultsFolder"] == folder()
 
 
+def fake_cfm(monkeypatch, config_used, darcy_defaults="absent"):
+    """Stub the CFM for the real _run_cfm: a FirnDensityNoSpin whose c is config_used, and a melt module in sys.modules
+    with _DARCY_DEFAULTS (not if darcy_defaults is "absent")."""
+
+    class Firn:
+        c = config_used
+
+        def __init__(self, config_path, **kwargs):
+            pass
+
+        def time_evolve(self):
+            pass
+
+    melt = type(sys)("melt")
+    if darcy_defaults != "absent":
+        melt._DARCY_DEFAULTS = darcy_defaults
+    monkeypatch.setitem(sys.modules, "melt", melt)
+    monkeypatch.setattr(sim.run, "import_cfm", lambda repo: (lambda *a, **k: ({"SUBLIM": 1.0}, 12.0, 5.0, 10.0, 100.0, None), Firn))
+
+
+def test_run_records_the_cfm_config_used(data_path, monkeypatch):
+    """FEAT-010: cfm_config_used is firn.c; cfm_config and the run hash do not change; a bucket run has no darcy table."""
+    fake_cfm(monkeypatch, {"liquid": "bucket", "Ksat_darcy": "Calonne", "arr": np.array([1, 2])}, {"IrrVal": 0.02})
+    run = new_run()
+    run.run()
+    manifest = read_manifest(folder())
+    assert manifest["status"] == COMPLETE
+    assert manifest["cfm_config_used"] == {"liquid": "bucket", "Ksat_darcy": "Calonne", "arr": "[1 2]"}
+    assert "cfm_darcy_defaults" not in manifest
+    assert "Ksat_darcy" not in manifest["cfm_config"]
+    assert manifest["run_hash"] == run._run_hash == run_hash()
+
+
+def test_darcy_run_records_the_darcy_defaults(data_path, monkeypatch):
+    fake_cfm(monkeypatch, {"liquid": "darcy"}, {"IrrVal": 0.02, "Ksat_darcy": "Calonne"})
+    darcy_run().run()
+    manifest = read_manifest(darcy_run().prepare())
+    assert manifest["cfm_darcy_defaults"] == {"IrrVal": 0.02, "Ksat_darcy": "Calonne"}
+    assert manifest["cfm_config_used"] == {"liquid": "darcy"}
+
+
+def test_darcy_run_of_a_cfm_without_the_table_has_no_darcy_defaults(data_path, monkeypatch):
+    fake_cfm(monkeypatch, {"liquid": "darcy"})
+    darcy_run().run()
+    manifest = read_manifest(darcy_run().prepare())
+    assert manifest["status"] == COMPLETE and "cfm_config_used" in manifest
+    assert "cfm_darcy_defaults" not in manifest
+
+
+def test_a_record_that_fails_is_a_warning_not_a_failed_run(data_path, monkeypatch, caplog):
+    config_used = {}
+    config_used["self"] = config_used  # json.dumps raises ValueError
+    fake_cfm(monkeypatch, config_used)
+    new_run().run()
+    manifest = read_manifest(folder())
+    assert manifest["status"] == COMPLETE
+    assert "cfm_config_used" not in manifest
+    assert "settings of the CFM are not in the manifest" in caplog.text
+
+
 def test_sites_are_recorded(data_path, cfm_calls):
     new_run(site="CI-0").run()
     CFMRun(-66.41, -63.38, *SITE[2:], VERSION, site="CI-0-twin").run()  # another site in the same cell
@@ -191,6 +252,88 @@ def test_a_change_gives_a_new_run(data_path, cfm_calls, identities, monkeypatch,
     assert len(cfm_calls) == 2
     assert cfm_calls[0] != cfm_calls[1]
     assert os.path.dirname(cfm_calls[0]) == os.path.dirname(cfm_calls[1])
+
+
+def darcy_run(**cfm_config) -> CFMRun:
+    """A darcy run of SITE, with the darcy options cfm_config in the darcy section of cfm_config_by_liquid."""
+    set_darcy_section(**cfm_config)
+    return CFMRun(*SITE[:4], "darcy", VERSION)
+
+
+def set_darcy_section(**cfm_config) -> None:
+    """Set the darcy section of cfm_config_by_liquid to cfm_config (the test config is restored after each test)."""
+    config["cfm_config_by_liquid"] = {"darcy": dict(cfm_config)}
+
+
+def test_darcy_section_does_not_change_the_bucket_hash(data_path):
+    """A bucket run does not get the darcy section, so its hash is the same with or without darcy keys."""
+    config["cfm_config_by_liquid"] = None
+    without = run_hash()
+    set_darcy_section(Ksat_darcy="power_law", krel_darcy="power_law")
+    assert run_hash() == without
+
+
+def test_empty_darcy_section_is_no_section(data_path):
+    """A darcy section with only comments in config.yaml is None: the run is the same as with no section."""
+    config["cfm_config_by_liquid"] = {"darcy": None}
+    empty = CFMRun(*SITE[:4], "darcy", VERSION).prepare()
+    config["cfm_config_by_liquid"] = None
+    assert CFMRun(*SITE[:4], "darcy", VERSION).prepare() == empty
+
+
+def test_darcy_section_is_in_the_darcy_config(data_path):
+    run = darcy_run(Ksat_darcy="power_law")
+    assert run._cfm_config["Ksat_darcy"] == "power_law" and run._cfm_config["liquid"] == "darcy"
+
+
+def test_darcy_section_replaces_a_cfm_config_value(data_path):
+    assert config["cfm_config"]["IrrVal"] != 0.05
+    assert darcy_run(IrrVal=0.05)._cfm_config["IrrVal"] == 0.05
+    assert new_run()._cfm_config["IrrVal"] == config["cfm_config"]["IrrVal"]
+
+
+def test_darcy_section_does_not_change_cfm_config(data_path):
+    darcy_run(Ksat_darcy="power_law")
+    assert "Ksat_darcy" not in config["cfm_config"]
+
+
+@pytest.mark.parametrize(
+    "by_liquid, message",
+    [
+        ({"Darcy": {"Ksat_darcy": "power_law"}}, "'Darcy', which is not a liquid scheme"),
+        ({"darcy": {"liquid": "bucket"}}, "sets liquid"),
+        ({"darcy": {"physRho": "HLdynamic", "resultsFolder": "x"}}, "sets physRho, resultsFolder"),
+        ({"darcy": ["Ksat_darcy"]}, "cfm_config_by_liquid.darcy in config.yaml must be a mapping"),
+        (["darcy"], "must be a mapping of liquid scheme"),
+    ],
+)
+def test_bad_cfm_config_by_liquid_is_refused(data_path, by_liquid, message):
+    """Each section is checked, for a run of any scheme: a misspelled scheme name stops the bucket runs too."""
+    config["cfm_config_by_liquid"] = by_liquid
+    with pytest.raises(ConfigError, match=message):
+        new_run()
+
+
+def test_darcy_run_folder(data_path):
+    parts = os.path.relpath(darcy_run().prepare(), data_path).split(os.sep)
+    assert parts[:4] == ["runs", "RACMO_261_126", "GSFC2020_darcy_1979-2024", "test"]
+
+
+def test_darcy_options_are_in_the_run_hash(data_path):
+    """Two darcy runs that differ only in Ksat_darcy have the same <physRho>_<liquid> folder and different hashes."""
+    calonne = darcy_run(Ksat_darcy="Calonne").prepare()
+    power_law = darcy_run(Ksat_darcy="power_law").prepare()
+    assert os.path.dirname(calonne) == os.path.dirname(power_law)
+    assert calonne != power_law
+
+
+def test_bucket_and_darcy_are_different_runs(data_path):
+    assert os.path.dirname(os.path.dirname(folder())) != os.path.dirname(os.path.dirname(darcy_run().prepare()))
+
+
+def test_other_liquid_scheme_is_refused(data_path):
+    with pytest.raises(ValueError, match="bucket, darcy"):
+        CFMRun(*SITE[:4], "resingledomain", VERSION)
 
 
 @pytest.mark.parametrize(

@@ -23,6 +23,7 @@ import logging
 from cfm_config import config, get_site
 from force.years import add_year_arguments
 from plot.results import ResultsPlotter
+from sim.manifest import LIQUID_SCHEMES
 from sim.runs import add_spin_end_year_argument
 
 logging.basicConfig(level=logging.INFO)
@@ -50,7 +51,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--liquid",
         type=str,
-        help="Meltwater scheme to use (currently only bucket)",
+        choices=LIQUID_SCHEMES,
+        help="Meltwater scheme of the runs",
     )
 
     parser.add_argument(

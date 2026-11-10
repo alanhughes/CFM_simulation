@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 from typing import Literal
 
-from cfm_config import config
+from cfm_config import ConfigError, config
 from cfm_config import cfm_version as lookup_cfm_version
 from force.cache import find_forcing_csv, forcing_json_path, sha256_file
 from force.model_point import ModelPoint, model_point_at
@@ -19,7 +19,9 @@ from sim.identity import check_cfm_identity, check_wrapper_identity, measure_cfm
 from sim.manifest import (
     COMPLETE,
     FAILED,
+    LIQUID_SCHEMES,
     RUNNING,
+    LiquidScheme,
     WRAPPER_PARAMS,
     is_alive,
     now,
@@ -35,6 +37,51 @@ from sim.manifest import (
 )
 
 CFM_CONFIG_NAME = "CFMconfig.json"
+
+# the cfm_config keys that the wrapper sets for each run, which a section of cfm_config_by_liquid must not set
+_WRAPPER_SET_CFM_CONFIG_KEYS = ("liquid", "physRho", "resultsFolder")
+
+
+def scheme_cfm_config(liquid: str, cfg: dict | None = None) -> dict:
+    """A copy of cfm_config of config.yaml for a run of the liquid scheme liquid, with the section cfm_config_by_liquid
+    of the scheme added on top.
+
+    The section of a scheme goes to the runs of that scheme only, so a darcy key does not change the hash of the bucket
+    runs. A key in cfm_config and in the section takes the value of the section. Without cfm_config_by_liquid, or
+    without a section for the scheme, this is a copy of cfm_config, so the hash of a run is as before. An empty section
+    (only comments in config.yaml) is no section. cfg is config if None.
+
+    Stops with ConfigError if cfm_config_by_liquid is not a mapping, has a section for a scheme that is not in
+    LIQUID_SCHEMES (all the sections are checked, so that a misspelled scheme name stops each run), has a section that
+    is not a mapping, or has a section that sets a key of _WRAPPER_SET_CFM_CONFIG_KEYS.
+    """
+    cfg = config if cfg is None else cfg
+    by_liquid = cfg.get("cfm_config_by_liquid") or {}
+    if not isinstance(by_liquid, dict):
+        raise ConfigError("cfm_config_by_liquid in config.yaml must be a mapping of liquid scheme to cfm_config keys.")
+    unknown = [scheme for scheme in by_liquid if scheme not in LIQUID_SCHEMES]
+    if unknown:
+        raise ConfigError(
+            f"cfm_config_by_liquid in config.yaml has a section for {', '.join(map(repr, unknown))}, which is not a "
+            f"liquid scheme. The schemes are {', '.join(LIQUID_SCHEMES)}."
+        )
+    for scheme, section in by_liquid.items():
+        if section is not None and not isinstance(section, dict):
+            raise ConfigError(f"cfm_config_by_liquid.{scheme} in config.yaml must be a mapping of cfm_config keys.")
+        wrapper_set = [key for key in _WRAPPER_SET_CFM_CONFIG_KEYS if key in (section or {})]
+        if wrapper_set:
+            raise ConfigError(
+                f"cfm_config_by_liquid.{scheme} in config.yaml sets {', '.join(wrapper_set)}, which the wrapper sets "
+                "for each run. Delete them from the section."
+            )
+
+    cfm_config = copy.deepcopy(cfg["cfm_config"])
+    section = copy.deepcopy(by_liquid.get(liquid) or {})
+    replaced = sorted(key for key in section if key in cfm_config and cfm_config[key] != section[key])
+    if replaced:
+        logging.info(f"cfm_config_by_liquid.{liquid} replaces the cfm_config value of {', '.join(replaced)}.")
+    cfm_config.update(section)
+    return cfm_config
 
 logging.basicConfig(level=logging.INFO)
 
@@ -88,7 +135,7 @@ class CFMRun:
         borehole_lon: float,
         physRho: str,
         rcm_name: Literal["MAR", "RACMO"],
-        liquid: Literal["bucket"],
+        liquid: LiquidScheme,
         cfm_version: dict | None = None,
         force: bool = False,
         site: str | None = None,
@@ -105,7 +152,8 @@ class CFMRun:
             borehole_lon (float): Longitude of borehole location.
             physRho (str): Physical densification scheme to use in CFM model.
             rcm_name (Literal["MAR", "RACMO"]): RCM name to use for forcing data (e.g., MAR or RACMO).
-            liquid (Literal["bucket"]): meltwater scheme to use (currently only bucket)
+            liquid (LiquidScheme): meltwater scheme to use, one of LIQUID_SCHEMES ("bucket" or "darcy"). Stops with
+                ValueError for a different value
             cfm_version (dict | None): CFM version from cfm_config.cfm_version(), default_cfm_version if None. This
                 process must be running that version's python.
             force (bool): rerun even if a complete run exists in the output folder.
@@ -121,8 +169,10 @@ class CFMRun:
         self._borehole_lat: float = borehole_lat
         self._borehole_lon: float = borehole_lon
 
-        # a copy of the cfm config, as _run_cfm adds keys to it
-        self._cfm_config: dict = copy.deepcopy(config["cfm_config"])
+        if liquid not in LIQUID_SCHEMES:
+            raise ValueError(f"liquid must be one of {', '.join(LIQUID_SCHEMES)}, not {liquid!r}.")
+        # a copy of the cfm config with the section of the liquid scheme, as _run_cfm adds keys to it
+        self._cfm_config: dict = scheme_cfm_config(liquid)
 
         # set physRho and borehole loc from argument in case we've used command line to override config
         self._cfm_config["physRho"] = physRho
@@ -417,6 +467,23 @@ class CFMRun:
         self._force_data = pd.read_csv(self._force_data_path, index_col=0, parse_dates=True)
         logging.info(f"Forcing data read from {self._force_data_path}.")
 
+    def _record_cfm_settings(self, firn) -> None:
+        """Add cfm_config_used (the config dictionary of the CFM, firn.c, after it loaded the config) and, for a darcy
+        run, cfm_darcy_defaults (melt._DARCY_DEFAULTS of the CFM that ran) to the manifest, for a person to read and for
+        Run.cfm_config_value (FEAT-010). cfm_config is not changed. A failure is a warning: it does not fail the run."""
+        try:
+            used = json.loads(json.dumps(firn.c, default=str))
+            darcy_defaults = None
+            if self._cfm_config["liquid"] == "darcy":
+                darcy_defaults = getattr(sys.modules.get("melt"), "_DARCY_DEFAULTS", None)  # melt of import_cfm
+                if darcy_defaults is not None:
+                    darcy_defaults = json.loads(json.dumps(darcy_defaults, default=str))
+            self._manifest["cfm_config_used"] = used
+            if darcy_defaults is not None:
+                self._manifest["cfm_darcy_defaults"] = darcy_defaults
+        except Exception as error:
+            logging.warning(f"The settings of the CFM are not in the manifest: {error!r}")
+
     def _run_cfm(self) -> None:
         """Run the CFM model using the forcing data and configuration.
         This code is mostly copied from main.py in the CFM repository.
@@ -467,3 +534,4 @@ class CFMRun:
             SEBfluxes=SEBfluxes,
         )
         firn.time_evolve()
+        self._record_cfm_settings(firn)
