@@ -73,8 +73,10 @@ def load_cfm_overrides(path: str) -> dict:
     outputs) is not merged. An empty file (or a file with only comments) has no keys.
 
     Stops with ConfigError if the file does not exist or is not valid YAML, if it is not a mapping, if a key is not a
-    string, if it has a section of config.yaml (cfm_config, cfm_config_by_liquid) in place of the cfm_config keys, or if
-    it sets a key of REFUSED_CFM_OVERRIDE_KEYS.
+    string, if it has a section of config.yaml (cfm_config, cfm_config_by_liquid) in place of the cfm_config keys, if
+    it sets a key of REFUSED_CFM_OVERRIDE_KEYS, or if a value cannot go into CFMconfig.json (for example a date, which
+    YAML reads from 2020-01-01). Without the last check, such a value goes into the hash and the run fails only when
+    _run_cfm writes CFMconfig.json, after the forcing, with a run folder and a failed manifest.
     """
     try:
         with open(path) as file:
@@ -105,6 +107,17 @@ def load_cfm_overrides(path: str) -> dict:
         raise ConfigError(
             f"The --cfm-overrides file {path} sets {', '.join(refused)}. The wrapper sets these keys for each run, "
             f"so the file must not set them. Delete them from the file.{options}"
+        )
+    not_json = []
+    for key, value in overrides.items():
+        try:
+            json.dumps(value)
+        except (TypeError, ValueError):
+            not_json.append(f"{key} ({type(value).__name__})")
+    if not_json:
+        raise ConfigError(
+            f"The --cfm-overrides file {path} has values that cannot go into CFMconfig.json: {', '.join(not_json)}. "
+            "Put quotes around a date or another value of that type."
         )
     return overrides
 

@@ -872,6 +872,7 @@ def test_a_refused_override_key_stops_the_run_before_it_starts(data_path, cfm_ca
         ("1: 2\n", "not strings"),
         ("cfm_config:\n  IrrVal: 0.05\n", "has the section cfm_config"),
         ("IrrVal: [0.05\n", "not valid YAML"),
+        ("IrrVal: 2020-01-01\n", r"cannot go into CFMconfig.json: IrrVal \(date\)"),
     ],
 )
 def test_a_bad_overrides_file_is_refused(data_path, text, message):
