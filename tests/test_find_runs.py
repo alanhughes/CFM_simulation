@@ -569,13 +569,80 @@ def test_cfm_config_value_sources():
     run = sim.runs.Run("x", {"cfm_config": {"SEB": True, "MELT": True}})
     assert run.cfm_config_value("SEB") is True  # 1. cfm_config
     assert sim.runs.Run("x", {"cfm_config": {"MELT": True}}).cfm_config_value("SEB") is False  # 2. the CFM default
-    assert run.cfm_config_value("SEB_TL_thick") is sim.runs.UNKNOWN  # no default
+    assert run.cfm_config_value("SEB_TL_thick") is sim.runs.CFM_DEFAULT  # no recorded default: the CFM's own
     migrated = {"cfm_config": None, "migrated": {"inferred_cfm_config": {"SEB": True}}}
     assert sim.runs.Run("x", migrated).cfm_config_value("SEB") is True  # 3. inferred
     assert sim.runs.Run("x", migrated).cfm_config_value("MELT") is sim.runs.UNKNOWN  # 4. not known
     # a migrated run gives no SEB default: its CFM config is not known
     assert sim.runs.Run("x", {"cfm_config": None, "migrated": {}}).cfm_config_value("SEB") is sim.runs.UNKNOWN
     assert sim.runs.Run("x", {}).cfm_config_value("SEB") is sim.runs.UNKNOWN
+
+
+def test_cfm_config_value_sources_in_sequence():
+    manifest = {
+        "cfm_config": {"Ksat_darcy": "power_law"},
+        "cfm_darcy_defaults": {"Ksat_darcy": "Calonne", "IrrVal": 0.02, "SEB": True},
+    }
+    run = sim.runs.Run("x", manifest)
+    assert run.cfm_config_value("Ksat_darcy") == "power_law"  # 1. cfm_config
+    assert run.cfm_config_value("IrrVal") == 0.02  # 2. cfm_darcy_defaults
+    assert run.cfm_config_value("SEB") is True  # cfm_darcy_defaults before CFM_CONFIG_DEFAULTS
+    assert run.cfm_config_value("meltwater_solver") == "enthalpy"  # 3. CFM_CONFIG_DEFAULTS
+    assert run.cfm_config_value("bucket_until_year") is sim.runs.CFM_DEFAULT  # 4. CFM_DEFAULT
+    assert {"IrrVal", "Ksat_darcy", "SEB", "meltwater_solver"} <= run.cfm_config_keys()
+    no_table = sim.runs.Run("x", {"cfm_config": {}, "cfm_darcy_defaults": None})
+    assert no_table.cfm_config_value("IrrVal") is sim.runs.CFM_DEFAULT
+    # a migrated run does not use cfm_darcy_defaults or CFM_DEFAULT
+    migrated = {"cfm_config": None, "cfm_darcy_defaults": {"IrrVal": 0.02}}
+    assert sim.runs.Run("x", migrated).cfm_config_value("IrrVal") is sim.runs.UNKNOWN
+    assert sim.runs.Run("x", migrated).cfm_config_value("bucket_until_year") is sim.runs.UNKNOWN
+
+
+def test_cfm_default_is_equal_to_cfm_default_only():
+    same, cfm_default, unknown = sim.runs.same_cfm_config_value, sim.runs.CFM_DEFAULT, sim.runs.UNKNOWN
+    assert same(cfm_default, cfm_default)
+    assert not same(cfm_default, "CFM default") and not same("CFM default", cfm_default)
+    assert not same(cfm_default, None) and not same(0, cfm_default) and not same(cfm_default, "Calonne")
+    assert not same(cfm_default, unknown) and not same(unknown, cfm_default) and not same(unknown, unknown)
+    assert repr(cfm_default) == "CFM default" and cfm_default is not unknown
+
+
+def darcy_run(name, cfm_config, darcy_defaults=None):
+    manifest = {"run_hash": name * 64, "cfm_config": cfm_config}
+    if darcy_defaults is not None:
+        manifest["cfm_darcy_defaults"] = darcy_defaults
+    return sim.runs.Run(name, manifest)
+
+
+def test_darcy_runs_with_and_without_a_key_differ():
+    power_law = darcy_run("a", {"Ksat_darcy": "power_law"})
+    without = darcy_run("b", {})
+    cfm_default = sim.runs.CFM_DEFAULT
+    assert sim.runs.cfm_config_differences([power_law, without]) == {"Ksat_darcy": ["power_law", cfm_default]}
+    assert sim.runs.cfm_config_differences([without, darcy_run("c", {})]) == {}  # both use the CFM's default
+    message = sim.runs.describe_cfm_config_differences([power_law, without])
+    assert "Ksat_darcy (aaaaaaaa: 'power_law', bbbbbbbb: CFM default)" in message
+
+
+def test_darcy_runs_with_a_recorded_default_compare_as_equal():
+    defaults = {"Ksat_darcy": "Calonne"}
+    without = darcy_run("a", {}, defaults)
+    calonne = darcy_run("b", {"Ksat_darcy": "Calonne"}, defaults)
+    assert sim.runs.cfm_config_differences([without, calonne]) == {}
+    power_law = darcy_run("c", {"Ksat_darcy": "power_law"}, defaults)
+    assert sim.runs.cfm_config_differences([without, power_law]) == {"Ksat_darcy": ["Calonne", "power_law"]}
+    # a run from before FEAT-010 has no record: its missing key differs from a given Calonne
+    before = darcy_run("d", {})
+    assert sim.runs.cfm_config_differences([before, calonne]) == {"Ksat_darcy": [sim.runs.CFM_DEFAULT, "Calonne"]}
+
+
+def test_cfm_config_filter_does_not_match_cfm_default(runs):
+    make_run("RACMO_261_126", hash_="1" * 64, cfm_config=SEB_TRUE)
+    filters = dict(model_point="RACMO_261_126", physRho="GSFC2020", cfm="ab871c8")
+    assert find_runs(cfm_config={"SEB_TL_thick": 0.05}, **filters)
+    assert find_runs(cfm_config={"bucket_until_year": 1980}, **filters) == []
+    assert find_runs(cfm_config={"bucket_until_year": "CFM default"}, **filters) == []
+    assert find_runs(cfm_config={"bucket_until_year": None}, **filters) == []
 
 
 def test_cfm_config_values_are_compared_after_a_json_round_trip():

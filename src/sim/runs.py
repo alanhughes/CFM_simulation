@@ -24,9 +24,11 @@ spin_end_year_filter() the value for find_run.
 
 The cfm_config filter (FEAT-009) finds runs by the value of cfm_config keys, for example cfm_config={"SEB": False}, as
 two runs that differ only in a cfm_config key have different hashes but agree with all the other filters.
-Run.cfm_config_value() gives the value of a key: from cfm_config of the manifest, else from CFM_CONFIG_DEFAULTS, else
-(for a migrated run with no cfm_config) from migrated.inferred_cfm_config. A run whose value is not known (UNKNOWN)
-never agrees with the filter. If two or more runs differ in a known key, find_run() stops with LookupError, as does
+Run.cfm_config_value() gives the value of a key: from cfm_config of the manifest, else from cfm_darcy_defaults of the
+manifest, else from CFM_CONFIG_DEFAULTS, else CFM_DEFAULT (the CFM uses its own default, which the manifest does not
+record). For a migrated run with no cfm_config, it gives the value from migrated.inferred_cfm_config, else UNKNOWN.
+CFM_DEFAULT is equal to CFM_DEFAULT only, and it is compared. A run whose value is not known (UNKNOWN) never agrees
+with the filter. If two or more runs differ in a known key, find_run() stops with LookupError, as does
 plot.output.exactly_one(), and the message gives the keys that differ (cfm_config_differences).
 """
 
@@ -64,10 +66,21 @@ class _Unknown:
 # the value of Run.cfm_config_value for a key that is not known
 UNKNOWN = _Unknown()
 
+
+class _CfmDefault:
+    def __repr__(self) -> str:
+        return "CFM default"
+
+
+# the value of Run.cfm_config_value for a key that a run did not give, and that has no recorded default: the run used
+# the default of the CFM. It is equal to itself only (same_cfm_config_value), and it is compared, unlike UNKNOWN.
+CFM_DEFAULT = _CfmDefault()
+
 # the value that the CFM uses for a key that is not in its JSON. Only the keys with the same default in all the
 # versions of cfm_versions: SEB is False in firn_density_nospin.py of 3e3bf7e-speersm (208-209), ab871c8 and dev
-# (214-215). meltwater_solver is 'enthalpy' in firn_density_nospin.py of ab871c8, dev and r1m (345-348), and 3e3bf7e
-# has only the enthalpy solver (DEFAULT_MELTWATER_SOLVER).
+# (214-215). meltwater_solver is 'enthalpy' in firn_density_nospin.py of ab871c8, dev and r1m (345-348). 3e3bf7e has no
+# meltwater_solver key: LWC_heat selects the solver there, and it has only the enthalpy solver
+# (DEFAULT_MELTWATER_SOLVER).
 CFM_CONFIG_DEFAULTS: Dict[str, Any] = {"SEB": False, "meltwater_solver": DEFAULT_MELTWATER_SOLVER}
 
 # the defaults that also apply to a migrated run with no cfm_config, as in Run.meltwater_solver. SEB is not one: it
@@ -124,22 +137,31 @@ class Run:
         return (self.manifest.get("cfm_config") or {}).get("meltwater_solver", DEFAULT_MELTWATER_SOLVER)
 
     def cfm_config_value(self, key: str) -> Any:
-        """The value of a cfm_config key of the run (FEAT-009), or UNKNOWN. The sources, in this sequence: cfm_config
-        of the manifest; CFM_CONFIG_DEFAULTS if cfm_config does not have the key; migrated.inferred_cfm_config, then
-        MIGRATED_CFM_CONFIG_DEFAULTS, if the manifest has no cfm_config (a migrated run without a CFMconfig JSON)."""
+        """The value of a cfm_config key of the run (FEAT-009, FEAT-010). The sources, in this sequence: cfm_config of
+        the manifest; cfm_darcy_defaults of the manifest; CFM_CONFIG_DEFAULTS; CFM_DEFAULT. If the manifest has no
+        cfm_config (a migrated run without a CFMconfig JSON), migrated.inferred_cfm_config, then
+        MIGRATED_CFM_CONFIG_DEFAULTS, then UNKNOWN."""
         cfm_config = self.manifest.get("cfm_config")
         if isinstance(cfm_config, dict):
-            return cfm_config[key] if key in cfm_config else CFM_CONFIG_DEFAULTS.get(key, UNKNOWN)
+            for source in (cfm_config, self._cfm_darcy_defaults(), CFM_CONFIG_DEFAULTS):
+                if key in source:
+                    return source[key]
+            return CFM_DEFAULT
         if cfm_config is None:
             inferred = (self.manifest.get("migrated") or {}).get("inferred_cfm_config") or {}
             return inferred[key] if key in inferred else MIGRATED_CFM_CONFIG_DEFAULTS.get(key, UNKNOWN)
         return UNKNOWN
 
+    def _cfm_darcy_defaults(self) -> Dict[str, Any]:
+        """The copy of melt._DARCY_DEFAULTS in the manifest (a darcy run of FEAT-010), or {}."""
+        defaults = self.manifest.get("cfm_darcy_defaults")
+        return defaults if isinstance(defaults, dict) else {}
+
     def cfm_config_keys(self) -> Set[str]:
         """The cfm_config keys with a known value."""
         cfm_config = self.manifest.get("cfm_config")
         if isinstance(cfm_config, dict):
-            return set(cfm_config) | set(CFM_CONFIG_DEFAULTS)
+            return set(cfm_config) | set(self._cfm_darcy_defaults()) | set(CFM_CONFIG_DEFAULTS)
         if cfm_config is None:
             inferred = (self.manifest.get("migrated") or {}).get("inferred_cfm_config") or {}
             return set(inferred) | set(MIGRATED_CFM_CONFIG_DEFAULTS)
@@ -230,7 +252,9 @@ def _json_value(value: Any) -> Any:
 
 def same_cfm_config_value(a: Any, b: Any) -> bool:
     """Whether two cfm_config values are equal after a JSON round trip. 1 and 1.0 are equal; True and 1, and True and
-    "true", are not. UNKNOWN is equal to no value."""
+    "true", are not. CFM_DEFAULT is equal to CFM_DEFAULT only. UNKNOWN is equal to no value."""
+    if a is CFM_DEFAULT or b is CFM_DEFAULT:
+        return a is b
     if a is UNKNOWN or b is UNKNOWN:
         return False
     a, b = _json_value(a), _json_value(b)
@@ -241,9 +265,10 @@ def same_cfm_config_value(a: Any, b: Any) -> bool:
 
 def cfm_config_differences(runs: List[Run]) -> Dict[str, List[Any]]:
     """The cfm_config keys whose value differs between the runs, with the value of each run (UNKNOWN for a run that does
-    not know the key). A key differs if two runs that know it have different values; a run that does not know it (a
-    migrated run knows only its inferred keys) is not compared, so that one such run does not hide a difference
-    between the others. The paths (resultsFolder) are not compared."""
+    not know the key). A key differs if two runs that know it have different values. CFM_DEFAULT is a known value: it
+    differs from a given value. A run that does not know the key (a migrated run knows only its inferred keys) is not
+    compared, so that one such run does not hide a difference between the others. The paths (resultsFolder) are not
+    compared."""
     if len(runs) < 2:
         return {}
     keys = set.union(*(run.cfm_config_keys() for run in runs)) - set(_PATH_CFM_CONFIG_KEYS)
@@ -302,7 +327,8 @@ def find_runs(
     manifest: a run with no spin_end_year (a migrated-1 run, FEAT-004) never agrees with it. cfm is a label in
     cfm_versions. run_hash can be the first characters of the hash. status is "complete" by default; None gives all the
     runs. cfm_config is {key: value}: the runs whose Run.cfm_config_value(key) is equal to value for each key
-    (same_cfm_config_value); a run whose value is not known never agrees with it (FEAT-009).
+    (same_cfm_config_value); a run whose value is not known (UNKNOWN) or is CFM_DEFAULT never agrees with a given value
+    (FEAT-009, FEAT-010).
 
     root is one run root. If None, the runs in each root of run_roots() (FEAT-008), sorted by folder: the local runs,
     and the share runs. A run hash that agrees with the filters in the two roots gives the local run only, with
