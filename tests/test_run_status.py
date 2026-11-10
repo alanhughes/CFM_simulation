@@ -782,3 +782,128 @@ def test_run_checks_the_json_of_a_share_forcing_csv(data_path, monkeypatch):
     move_forcing_to_share(data_path, monkeypatch, record_sha256="0" * 64)
     with pytest.raises(RuntimeError, match="records " + "0" * 64):
         folder()
+
+
+# --cfm-overrides (FEAT-011)
+
+
+def overrides_file(tmp_path, text: str, name: str = "power_law") -> str:
+    """A --cfm-overrides file name.yaml in tmp_path with the contents text."""
+    path = tmp_path / f"{name}.yaml"
+    path.write_text(text)
+    return str(path)
+
+
+def test_without_overrides_the_hash_is_as_before(data_path):
+    """Without --cfm-overrides, the hashed cfm_config is scheme_cfm_config with physRho and liquid, as before FEAT-011.
+    An empty file (only comments) gives the same run. The real dry-build hashes of the report (c3373889 for bucket,
+    7236690f for darcy) need the real data, so they are not checked here."""
+    run = new_run()
+    run.prepare()
+    expected = {**sim.run.scheme_cfm_config("bucket"), "physRho": "GSFC2020", "liquid": "bucket"}
+    expected.pop("resultsFolder")  # not in the hash
+    assert run._hash_inputs["cfm_config"] == expected
+    assert folder(cfm_overrides=overrides_file(data_path, "# no keys\n")) == run.prepare()
+
+
+def test_an_override_is_in_cfm_config_and_the_hash(data_path):
+    assert config["cfm_config"]["IrrVal"] != 0.05
+    without = new_run()
+    without_folder = without.prepare()
+    run = new_run(cfm_overrides=overrides_file(data_path, "IrrVal: 0.05\nKsat_darcy: power_law\n"))
+    run_folder_ = run.prepare()
+    assert run._cfm_config["IrrVal"] == 0.05 and run._cfm_config["Ksat_darcy"] == "power_law"
+    assert run._hash_inputs["cfm_config"]["Ksat_darcy"] == "power_law"
+    assert os.path.dirname(run_folder_) == os.path.dirname(without_folder)
+    assert run._run_hash != without._run_hash
+    assert "Ksat_darcy" not in config["cfm_config"]
+
+
+def test_an_override_goes_on_top_of_the_liquid_section(data_path):
+    path = overrides_file(data_path, "Ksat_darcy: power_law\n")
+    set_darcy_section(Ksat_darcy="Calonne", krel_darcy="power_law")
+    run = CFMRun(*SITE[:4], "darcy", VERSION, cfm_overrides=path)
+    assert run._cfm_config["Ksat_darcy"] == "power_law" and run._cfm_config["krel_darcy"] == "power_law"
+
+
+def test_a_list_in_the_liquid_section_replaces_the_list_in_full(data_path):
+    """A list in cfm_config_by_liquid (outputs) replaces the list of cfm_config. It is not merged."""
+    assert "LWC" not in config["cfm_config"]["outputs"] and len(config["cfm_config"]["outputs"]) > 1
+    assert darcy_run(outputs=["density", "LWC"])._cfm_config["outputs"] == ["density", "LWC"]
+    assert new_run()._cfm_config["outputs"] == config["cfm_config"]["outputs"]
+
+
+def test_a_list_in_the_overrides_replaces_the_list_in_full(data_path):
+    set_darcy_section(outputs=["density", "LWC"])
+    path = overrides_file(data_path, "outputs: [temperature]\n")
+    assert CFMRun(*SITE[:4], "darcy", VERSION, cfm_overrides=path)._cfm_config["outputs"] == ["temperature"]
+
+
+def test_config_name_is_in_the_manifest_not_the_hash(data_path, cfm_calls):
+    """The file stem and the absolute path are in the manifest. Two files with the same keys are the same run."""
+    first = overrides_file(data_path, "IrrVal: 0.05\n", name="first")
+    second = overrides_file(data_path, "IrrVal: 0.05\n", name="second")
+    run = new_run(cfm_overrides=first)
+    run.run()
+    manifest = read_manifest(folder(cfm_overrides=first))
+    assert manifest["run"]["config_name"] == "first"
+    assert manifest["run"]["cfm_overrides"] == os.path.abspath(first)
+    assert "config_name" not in json.dumps(manifest["hash_inputs"])
+    assert folder(cfm_overrides=second) == folder(cfm_overrides=first)
+
+
+def test_without_overrides_the_manifest_has_no_config_name(data_path, cfm_calls):
+    new_run().run()
+    run = read_manifest(folder())["run"]
+    assert run["config_name"] is None and run["cfm_overrides"] is None
+
+
+@pytest.mark.parametrize("key", sim.run.REFUSED_CFM_OVERRIDE_KEYS)
+def test_a_refused_override_key_stops_the_run_before_it_starts(data_path, cfm_calls, key):
+    with pytest.raises(ConfigError, match=f"sets {key}"):
+        new_run(cfm_overrides=overrides_file(data_path, f"{key}: 1\n")).run()
+    assert cfm_calls == [] and not os.path.exists(os.path.join(data_path, "runs"))
+
+
+@pytest.mark.parametrize(
+    "text, message",
+    [
+        ("- IrrVal\n", "must be a mapping"),
+        ("1: 2\n", "not strings"),
+        ("cfm_config:\n  IrrVal: 0.05\n", "has the section cfm_config"),
+        ("IrrVal: [0.05\n", "not valid YAML"),
+        ("IrrVal: 2020-01-01\n", r"cannot go into CFMconfig.json: IrrVal \(date\)"),
+    ],
+)
+def test_a_bad_overrides_file_is_refused(data_path, text, message):
+    with pytest.raises(ConfigError, match=message):
+        new_run(cfm_overrides=overrides_file(data_path, text))
+
+
+def test_a_missing_overrides_file_is_refused(data_path):
+    with pytest.raises(ConfigError, match="Cannot read the --cfm-overrides file"):
+        new_run(cfm_overrides=str(data_path / "missing.yaml"))
+
+
+class _RecordingDict(dict):
+    """A dict that records the keys that are set."""
+
+    def __init__(self, *args):
+        super().__init__(*args)
+        self.set_keys = set()
+
+    def __setitem__(self, key, value):
+        self.set_keys.add(key)
+        super().__setitem__(key, value)
+
+
+def test_the_refused_keys_are_the_keys_that_run_cfm_sets(data_path, monkeypatch):
+    """_RUN_CFM_SET_KEYS is the list of the cfm_config keys that _run_cfm sets after the hash. If _run_cfm sets a new
+    key, add it to _RUN_CFM_SET_KEYS, so that a --cfm-overrides file cannot set it."""
+    fake_cfm(monkeypatch, {"liquid": "bucket"})
+    run = new_run()
+    os.makedirs(run.prepare())
+    run._cfm_config = _RecordingDict(run._cfm_config)
+    run._manifest = {}
+    run._run_cfm()
+    assert run._cfm_config.set_keys == set(sim.run._RUN_CFM_SET_KEYS)

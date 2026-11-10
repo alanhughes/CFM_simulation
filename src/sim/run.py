@@ -9,6 +9,7 @@ import traceback
 
 import numpy as np
 import pandas as pd
+import yaml
 from typing import Literal
 
 from cfm_config import ConfigError, config
@@ -41,15 +42,95 @@ CFM_CONFIG_NAME = "CFMconfig.json"
 # the cfm_config keys that the wrapper sets for each run, which a section of cfm_config_by_liquid must not set
 _WRAPPER_SET_CFM_CONFIG_KEYS = ("liquid", "physRho", "resultsFolder")
 
+# the cfm_config keys that CFMRun._run_cfm sets after the run hash is made, from the forcing (makeSpinFiles) or as fixed
+# values. A value for them in a --cfm-overrides file would go into the hash but not to the CFM, so the file must not
+# set them. tests/test_run_status.py checks that this is the list of keys that _run_cfm sets.
+_RUN_CFM_SET_KEYS = (
+    "stpsPerYear",
+    "stpsPerYearSpin",
+    "grid1bottom",
+    "grid2bottom",
+    "HbaseSpin",
+    "DIPhorizon",
+    "keep_firnthickness",
+    "grid_outputs",
+)
+
+# the keys that a --cfm-overrides file must not set: the keys that the wrapper sets (liquid and physRho have their own
+# options, --liquid and --physrho) and the keys that _run_cfm sets after the hash
+REFUSED_CFM_OVERRIDE_KEYS = _WRAPPER_SET_CFM_CONFIG_KEYS + _RUN_CFM_SET_KEYS
+
+# top-level keys of config.yaml that show a --cfm-overrides file with the wrong layout: the file has cfm_config keys
+# at its top level, not in a section
+_CONFIG_SECTION_KEYS = ("cfm_config", "cfm_config_by_liquid")
+
+
+def load_cfm_overrides(path: str) -> dict:
+    """The cfm_config keys of the --cfm-overrides file path, a YAML mapping of cfm_config key to value.
+
+    CFMRun puts these keys on top of scheme_cfm_config(liquid), before the run hash is made, so they are in cfm_config
+    and in the hash. A value replaces the value of cfm_config or of cfm_config_by_liquid in full: a list (for example
+    outputs) is not merged. An empty file (or a file with only comments) has no keys.
+
+    Stops with ConfigError if the file does not exist or is not valid YAML, if it is not a mapping, if a key is not a
+    string, if it has a section of config.yaml (cfm_config, cfm_config_by_liquid) in place of the cfm_config keys, if
+    it sets a key of REFUSED_CFM_OVERRIDE_KEYS, or if a value cannot go into CFMconfig.json (for example a date, which
+    YAML reads from 2020-01-01). Without the last check, such a value goes into the hash and the run fails only when
+    _run_cfm writes CFMconfig.json, after the forcing, with a run folder and a failed manifest.
+    """
+    try:
+        with open(path) as file:
+            overrides = yaml.safe_load(file)
+    except OSError as error:
+        raise ConfigError(f"Cannot read the --cfm-overrides file {path}: {error}.") from error
+    except yaml.YAMLError as error:
+        raise ConfigError(f"The --cfm-overrides file {path} is not valid YAML: {error}") from error
+    if overrides is None:
+        return {}
+    if not isinstance(overrides, dict):
+        raise ConfigError(f"The --cfm-overrides file {path} must be a mapping of cfm_config key to value.")
+    not_strings = [key for key in overrides if not isinstance(key, str)]
+    if not_strings:
+        raise ConfigError(
+            f"The --cfm-overrides file {path} has the keys {', '.join(map(repr, not_strings))}, which are not "
+            "strings. Each key must be a cfm_config key."
+        )
+    sections = [key for key in _CONFIG_SECTION_KEYS if key in overrides]
+    if sections:
+        raise ConfigError(
+            f"The --cfm-overrides file {path} has the section {', '.join(sections)}. Put the cfm_config keys at the "
+            "top level of the file, with no section."
+        )
+    refused = [key for key in REFUSED_CFM_OVERRIDE_KEYS if key in overrides]
+    if refused:
+        options = " Use --liquid and --physrho for liquid and physRho." if {"liquid", "physRho"} & set(refused) else ""
+        raise ConfigError(
+            f"The --cfm-overrides file {path} sets {', '.join(refused)}. The wrapper sets these keys for each run, "
+            f"so the file must not set them. Delete them from the file.{options}"
+        )
+    not_json = []
+    for key, value in overrides.items():
+        try:
+            json.dumps(value)
+        except (TypeError, ValueError):
+            not_json.append(f"{key} ({type(value).__name__})")
+    if not_json:
+        raise ConfigError(
+            f"The --cfm-overrides file {path} has values that cannot go into CFMconfig.json: {', '.join(not_json)}. "
+            "Put quotes around a date or another value of that type."
+        )
+    return overrides
+
 
 def scheme_cfm_config(liquid: str, cfg: dict | None = None) -> dict:
     """A copy of cfm_config of config.yaml for a run of the liquid scheme liquid, with the section cfm_config_by_liquid
     of the scheme added on top.
 
     The section of a scheme goes to the runs of that scheme only, so a darcy key does not change the hash of the bucket
-    runs. A key in cfm_config and in the section takes the value of the section. Without cfm_config_by_liquid, or
-    without a section for the scheme, this is a copy of cfm_config, so the hash of a run is as before. An empty section
-    (only comments in config.yaml) is no section. cfg is config if None.
+    runs. A key in cfm_config and in the section takes the value of the section, in full (a list such as outputs is
+    replaced, not merged). Without cfm_config_by_liquid, or without a section for the scheme, this is a copy of
+    cfm_config, so the hash of a run is as before. An empty section (only comments in config.yaml) is no section. cfg
+    is config if None.
 
     Stops with ConfigError if cfm_config_by_liquid is not a mapping, has a section for a scheme that is not in
     LIQUID_SCHEMES (all the sections are checked, so that a misspelled scheme name stops each run), has a section that
@@ -141,6 +222,7 @@ class CFMRun:
         site: str | None = None,
         requested_end_year: int | None = None,
         end_year_source: str = "config",
+        cfm_overrides: str | None = None,
     ) -> None:
         """Initialize CFM Run with configuration from config.yaml.
 
@@ -162,6 +244,11 @@ class CFMRun:
             requested_end_year (int | None): the end year that was asked for, before force.years.run_years clipped it
                 to the RCM data (DISC-001), for the manifest only. None: end_year of config.
             end_year_source (str): where requested_end_year came from, "config" (config.yaml) or "cli" (--end-year).
+            cfm_overrides (str | None): path of a YAML file of cfm_config keys (run_cfm.py --cfm-overrides), put on
+                top of scheme_cfm_config(liquid) before the run hash is made, so they are in cfm_config and in the
+                hash. load_cfm_overrides checks the file and stops with ConfigError if it is not correct. The stem of
+                the file goes into the manifest as run.config_name, and its absolute path as run.cfm_overrides, for an
+                analysis to name the run. Neither is in the hash. None: no overrides, and the hash is as before.
         """
 
         # all these need to be passed in because they vary by run
@@ -173,6 +260,23 @@ class CFMRun:
             raise ValueError(f"liquid must be one of {', '.join(LIQUID_SCHEMES)}, not {liquid!r}.")
         # a copy of the cfm config with the section of the liquid scheme, as _run_cfm adds keys to it
         self._cfm_config: dict = scheme_cfm_config(liquid)
+
+        # the keys of the --cfm-overrides file on top, before the hash is made (in prepare)
+        self._cfm_overrides_path: str | None = None
+        self._config_name: str | None = None
+        if cfm_overrides is not None:
+            overrides = load_cfm_overrides(cfm_overrides)
+            replaced = sorted(key for key in overrides if key in self._cfm_config)
+            if replaced:
+                logging.info(f"{cfm_overrides} replaces the cfm_config value of {', '.join(replaced)}.")
+            # a key that is not in cfm_config is in the hash, but the CFM uses it only if the CFM reads that key: a
+            # misspelled key gives a new run with the CFM default. cfm_config_used in the manifest shows what was used
+            added = sorted(key for key in overrides if key not in self._cfm_config)
+            if added:
+                logging.info(f"{cfm_overrides} adds {', '.join(added)} to cfm_config. Check the spelling of each.")
+            self._cfm_config.update(copy.deepcopy(overrides))
+            self._cfm_overrides_path = os.path.abspath(cfm_overrides)
+            self._config_name = os.path.splitext(os.path.basename(cfm_overrides))[0]
 
         # set physRho and borehole loc from argument in case we've used command line to override config
         self._cfm_config["physRho"] = physRho
@@ -453,6 +557,10 @@ class CFMRun:
                 "sublim_sf": config["sublim_sf"],
                 "rho_bottom": config["rho_bottom"],
                 "forcing_csv": self._force_data_path,
+                # the --cfm-overrides file (None without it): its keys are in cfm_config and the hash, the names are
+                # not in the hash
+                "config_name": self._config_name,
+                "cfm_overrides": self._cfm_overrides_path,
             },
             "cfm": cfm_identity,
             "wrapper": wrapper,

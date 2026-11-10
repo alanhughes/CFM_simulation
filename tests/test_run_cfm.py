@@ -98,3 +98,23 @@ def test_command_line_end_year_after_the_data_stops_before_the_forcing(calls):
     with pytest.raises(ForcingCoverageError):
         run_cfm.main(ARGS + ["--end-year", "2024"])
     assert calls["forcing"] == [] and calls["commands"] == []
+
+
+def test_cfm_overrides_is_given_to_the_worker_as_an_absolute_path(calls, tmp_path, monkeypatch):
+    """FEAT-011: the file is checked here and given to the worker. Without it, the worker gets no --cfm-overrides."""
+    (tmp_path / "power_law.yaml").write_text("Ksat_darcy: power_law\n")
+    monkeypatch.chdir(tmp_path)
+    assert run_cfm.main(ARGS + ["--cfm-overrides", "power_law.yaml"]) == 0
+    assert run_cfm.main(ARGS) == 0
+    with_file, without = calls["commands"]
+    assert _option(with_file, "--cfm-overrides") == str(tmp_path / "power_law.yaml")
+    assert "--cfm-overrides" not in without
+
+
+def test_a_bad_cfm_overrides_file_stops_before_the_forcing(calls, tmp_path, capsys):
+    path = tmp_path / "bad.yaml"
+    path.write_text("liquid: darcy\nKsat_darcy: power_law\n")
+    with pytest.raises(SystemExit):
+        run_cfm.main(ARGS + ["--cfm-overrides", str(path)])
+    assert "sets liquid" in capsys.readouterr().err
+    assert calls["forcing"] == [] and calls["commands"] == []
