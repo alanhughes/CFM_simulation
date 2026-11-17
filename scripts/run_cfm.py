@@ -17,6 +17,7 @@ Usage:
     python run_cfm.py ... --cfm <label>    # CFM version from cfm_versions in config.yaml
     python run_cfm.py ... --start-year 1979 --end-year 2020    # other years
     python run_cfm.py ... --cfm-overrides configs/power_law.yaml    # cfm_config keys for this run only
+    python run_cfm.py ... --profile --force    # also write cfm_profile.prof in the run folder
 
 Each argument that is not given comes from config.yaml (default_site, cfm_config.physRho, rcm_name, cfm_config.liquid).
 
@@ -40,6 +41,15 @@ physRho (use --liquid and --physrho), resultsFolder, or a key that the run sets 
 not correct. The manifest records the file stem as run.config_name and the absolute path as run.cfm_overrides; they
 are not in the hash. The worker reads the file when it starts, so do not change the file while a run starts.
 
+The manifest of each run has a "timing" block: the time of each stage, the CPU time, the maximum RSS and the machine data
+(FEAT-013). The CFM writes step_timing.csv in the run folder. A stage time covers the worker process: it does not
+cover the forcing extraction here.
+
+--profile runs the CFM under cProfile and writes cfm_profile.prof in the run folder (read it with pstats). The manifest
+then has timing.profiled true, and the stage times are longer than without the profile, so leave the run out of a timing
+analysis. The profile is not in the run hash, so a complete run with the same hash is skipped: an existing run needs
+--force. A profiled run has one file more than an unprofiled run with the same hash, and sync_runs.py then reports the
+two copies as different. Use a separate CFM_data_path for profiled runs, not the data path of the run tree.
 """
 
 import argparse
@@ -71,15 +81,18 @@ def worker_command(
     years: RunYears,
     force: bool = False,
     cfm_overrides: Optional[str] = None,
+    profile: bool = False,
 ) -> List[str]:
     """The sim.worker command line of one run. The worker uses the years given here; it does not resolve them.
-    cfm_overrides is the path of the --cfm-overrides file, or None."""
+    cfm_overrides is the path of the --cfm-overrides file, or None. profile is --profile."""
     command = [version["python"], "-m", "sim.worker", "--lat", str(site.lat), "--lon", str(site.lon)]
     command += ["--site", site.name, "--physrho", physRho, "--rcm", rcm_name, "--liquid", liquid]
     command += ["--cfm", version["label"], "--start-year", str(years.start_year), "--end-year", str(years.end_year)]
     command += ["--requested-end-year", str(years.requested_end_year), "--end-year-source", years.end_year_source]
     if cfm_overrides is not None:
         command += ["--cfm-overrides", cfm_overrides]
+    if profile:
+        command.append("--profile")
     if force:
         command.append("--force")
     return command
@@ -101,6 +114,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         metavar="FILE.yaml",
         help="YAML file of cfm_config keys for this run, on top of config.yaml (in cfm_config and the run hash); "
         "its stem is recorded as config_name in the manifest",
+    )
+    parser.add_argument(
+        "--profile",
+        action="store_true",
+        help="run the CFM under cProfile and write cfm_profile.prof in the run folder. The run is slower. Use a "
+        "separate CFM_data_path (a profiled run has an extra file), and --force to profile an existing complete run",
     )
     add_year_arguments(parser)
 
@@ -142,7 +161,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     src_path = os.path.dirname(os.path.dirname(os.path.abspath(sim.__file__)))
     env = {**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, [src_path, os.environ.get("PYTHONPATH")]))}
     command = worker_command(
-        version, site, physRho, rcm_name, liquid, years, force=args.force, cfm_overrides=cfm_overrides
+        version,
+        site,
+        physRho,
+        rcm_name,
+        liquid,
+        years,
+        force=args.force,
+        cfm_overrides=cfm_overrides,
+        profile=args.profile,
     )
     logging.info(f"Running CFM version {version['label']!r} with {version['python']}.")
     return subprocess.run(command, env=env).returncode
