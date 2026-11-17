@@ -182,6 +182,17 @@ Forcing is extracted once per model point, into a cache shared by all CFM versio
 
 `forcing_data_path` defaults to `{CFM_data_path}/forcing`. `<release>` comes from the RCM file names, so a new data release gets new forcing. Old `cfm_input/` CSVs can be checked against the cache layout with `python scripts/migrate_forcing_csvs.py --dry-run <cfm_input folder>` (it only prints a plan).
 
+#### A machine without the RCM data (the HEC)
+
+A run reads the RCM data folder before it reads the forcing CSV: the file names give the release and the years (DISC-001), and one file gives the grid for the model point. An *RCM index* is a small folder that holds this metadata, so a machine without the RCM data finds the same model point, release and years, and so the same forcing CSV, run folder and `hash_inputs.model_point` (FEAT-012):
+
+```
+<index folder>/rcm_index.json   # release, source data path, all file names, coordinate file, grid checksum
+<index folder>/grid.npz         # 2D lat/lon of the grid
+```
+
+On a machine with the data, `python scripts/make_rcm_index.py --rcm RACMO --out <index folder>` writes the index and checks it against the data folder (the model point of every site in `sites.yaml`, and the data days). The default `--out` is `{forcing_data_path}/<rcm>/<release>/rcm_index`. `scripts/sync_runs.py` does not copy it (it copies only the forcing `.csv` and `.json` files), so give an `--out` on the share, or copy the folder. On the machine without the data, set `RACMO_data_path` (or the `MAR` / `RACMO23` key) to the index folder, and copy the forcing CSVs with their `.json` files. A forcing CSV that is not in the cache then stops the run: the forcing is never made from an index. Write a new index when the RCM data folder changes.
+
 #### Fast forcing extraction
 
 The `RACMO`, `RACMO23` and `MAR` forcing is extracted with `h5py` in one parallel pass over the files (`src/force/extract.py`). Each HDF5 chunk is a full daily map, so any method must read all the bytes (66 GB for `RACMO`, 47 GB for `RACMO23`, 24 GB for `MAR` 1979-2024). One pass takes approximately 1.5 minutes (`MAR`) to 5 minutes, and `forcing_processes` (default 8) sets the number of worker processes. The first pass also keeps all grid cells in a box around the active sites in `sites.yaml` in a local `cache.h5` (next to the forcing CSVs; `forcing_cache`, `forcing_cache_dir` and `forcing_cache_margin` in `config.example.yaml`). A later site inside the box then takes under one second. `python scripts/extract_forcing.py` makes the forcing for all active sites in one pass (`--rcm MAR` for MAR). For `MAR`, the extraction keeps `SECTOR` = `sector` and the surface layer (`OUTLAY` = 0), as the old code did.

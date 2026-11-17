@@ -18,6 +18,7 @@ import xarray as xr
 from cfm_config import Site, config, get_site
 
 from .grid import nearest_cell
+from .rcm_index import data_file_names, is_rcm_index, read_index, read_index_grid
 
 # For each RCM: the config key of its data path, the names of its 2D latitude/longitude arrays, and a regex that
 # splits a file name into its variable/year parts and the release. The release is the part of the file name that
@@ -83,10 +84,13 @@ def rcm_data_path(rcm_name: str) -> str:
 
 @functools.lru_cache(maxsize=None)
 def _release_and_files(rcm_name: str, data_path: str) -> Tuple[str, Tuple[str, ...]]:
-    """Release name and the sorted RCM data file names in data_path. Lists the folder only; opens no file."""
+    """Release name and the sorted RCM data file names in data_path. Lists the folder only; opens no file.
+
+    data_path can be an RCM index folder (FEAT-012): then the names are the names that the index recorded.
+    """
     spec = _RCM_GRIDS[rcm_name]
     pattern = re.compile(spec["file_regex"])
-    matches = sorted((m for m in map(pattern.match, os.listdir(data_path)) if m), key=lambda m: m.string)
+    matches = sorted((m for m in map(pattern.match, data_file_names(data_path)) if m), key=lambda m: m.string)
     if not matches:
         raise FileNotFoundError(f"No {rcm_name} files that match {spec['file_regex']} in {data_path}")
     releases = {m["release"] for m in matches}
@@ -108,14 +112,24 @@ def rcm_release(rcm_name: str, data_path: Optional[str] = None) -> str:
 def _grid(rcm_name: str, data_path: str) -> Tuple[str, str, np.ndarray, np.ndarray]:
     """Release name, coordinate file, and the 2D latitude/longitude arrays of one RCM dataset.
 
-    Opens one file only. The result is cached for the life of the process.
+    Opens one file only. The result is cached for the life of the process. For an RCM index folder (FEAT-012), the
+    arrays come from its grid file; the index must name the same release and coordinate file as its file names give.
     """
     spec = _RCM_GRIDS[rcm_name]
     release, files = _release_and_files(rcm_name, data_path)
     coord_file = os.path.join(data_path, files[0])
-    with xr.open_dataset(coord_file) as ds:
-        lat2d = np.asarray(ds[spec["lat"]].values, dtype=float)
-        lon2d = np.asarray(ds[spec["lon"]].values, dtype=float)
+    if is_rcm_index(data_path):
+        index = read_index(data_path)
+        if (index["rcm_name"], index["release"], index["coord_file"]) != (rcm_name, release, files[0]):
+            raise ValueError(
+                f"The RCM index {data_path} is for {index['rcm_name']} {index['release']} ({index['coord_file']}), "
+                f"but its file names give {rcm_name} {release} ({files[0]})"
+            )
+        lat2d, lon2d = read_index_grid(data_path)
+    else:
+        with xr.open_dataset(coord_file) as ds:
+            lat2d = np.asarray(ds[spec["lat"]].values, dtype=float)
+            lon2d = np.asarray(ds[spec["lon"]].values, dtype=float)
     if lat2d.ndim != 2:
         raise ValueError(f"Expected 2D {spec['lat']} in {coord_file}, got shape {lat2d.shape}")
     return release, coord_file, lat2d, lon2d
@@ -125,6 +139,7 @@ def clear_cache() -> None:
     """Forget the cached file listings and coordinate arrays (for tests, or after the data path changes)."""
     _release_and_files.cache_clear()
     _grid.cache_clear()
+    read_index.cache_clear()
 
 
 def model_point_at(lat: float, lon: float, rcm_name: str) -> ModelPoint:
