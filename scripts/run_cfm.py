@@ -26,6 +26,11 @@ year from --end-year is not clipped; if the data does not include it, the run st
 (force.years.run_years) and given to sim.worker, which does not resolve them again.
 To run at a new location, add it to sites.yaml and sites.lock first.
 
+On a machine without the RCM data (the HEC), set the data path key of the RCM (for example RACMO_data_path) to an RCM
+index folder, written on a machine with the data by scripts/make_rcm_index.py (FEAT-012). The release, the model point
+and the data years then come from the index, and a forcing CSV that is not in the cache stops the run before the CFM
+starts: the forcing is never made from an index.
+
 --cfm-overrides <file.yaml> gives cfm_config keys for this run only, without an edit of config.yaml: a YAML mapping of
 cfm_config key to value, for example "Ksat_darcy: power_law". The keys go on top of cfm_config and the
 cfm_config_by_liquid section of the scheme, before the run hash is made, so they are in the run's cfm_config and hash.

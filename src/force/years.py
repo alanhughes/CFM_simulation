@@ -9,9 +9,10 @@ years for one RCM:
 - the start year is never changed: data that starts after it is an error, as it would shorten the spin-up;
 - a clipped end year before spin_end_year is an error.
 
-The data years come from the file names only (extract.file_days); no data file is opened. A year is complete if the
-data of every variable reaches 31 December of it. A missing year inside the range is not checked here: the forcing
-code stops on it (BUG-003).
+The data years come from the file names only (extract.file_days); no data file is opened. The data path can be an RCM
+index folder (FEAT-012), which records the file names of a data folder. A year is complete if the data of every
+variable reaches 31 December of it. A missing year inside the range is not checked here: the forcing code stops on it
+(BUG-003).
 
 Each script resolves the years once, at its start, and then sets them in config for the rest of the process
 (set_config_years), as the forcing and run code reads config["start_year"] and config["end_year"]. scripts/run_cfm.py
@@ -20,7 +21,6 @@ gives its years to sim.worker on the command line, so the two processes of a run
 
 import argparse
 import datetime
-import glob
 import logging
 import os
 from dataclasses import dataclass
@@ -31,6 +31,7 @@ from cfm_config import config
 from .cache import ForcingCoverageError
 from .extract import DATASETS, ExtractSettings, file_days
 from .model_point import rcm_release
+from .rcm_index import match_data_files
 
 CONFIG = "config"
 CLI = "cli"
@@ -73,14 +74,12 @@ def data_days(rcm_name: str, cfg: Optional[Mapping] = None) -> DataDays:
     settings = ExtractSettings.from_config(rcm_name, cfg)
     spec = settings.spec
     # MAR has all the variables in each file, so its variables share one pattern
-    patterns = dict.fromkeys(
-        os.path.join(settings.data_path, spec.file_glob.format(var=var)) for var in settings.source_vars
-    )
+    patterns = dict.fromkeys(spec.file_glob.format(var=var) for var in settings.source_vars)
     firsts, lasts = [], []
     for pattern in patterns:
-        paths = glob.glob(pattern)
+        paths = match_data_files(settings.data_path, pattern)
         if not paths:
-            raise FileNotFoundError(f"No {rcm_name} files that match {pattern}")
+            raise FileNotFoundError(f"No {rcm_name} files that match {os.path.join(settings.data_path, pattern)}")
         days = [file_days(spec, path) for path in paths]
         firsts.append(min(first for first, _ in days))
         lasts.append(max(last for _, last in days))

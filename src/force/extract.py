@@ -34,6 +34,8 @@ import h5py
 import numpy as np
 import pandas as pd
 
+from .rcm_index import is_rcm_index
+
 Cell = Tuple[int, int]  # (y, x) = (rlat index, rlon index)
 Box = Tuple[int, int, int, int]  # (y0, y1, x0, x1), end exclusive
 
@@ -861,6 +863,15 @@ def process_fast(
         return []
 
     settings = ExtractSettings.from_config(dataset, **overrides)
+    if is_rcm_index(settings.data_path):
+        # an index has no data (FEAT-012): never try to make forcing on a machine that has only an index
+        missing = "\n".join(f"  {p._save_path}" for p in todo)
+        raise FileNotFoundError(
+            f"No {dataset} forcing CSV in the forcing cache for:\n{missing}\n"
+            f"{settings.spec.data_path_key} is an RCM index ({settings.data_path}), with no RCM data, so the forcing "
+            "cannot be made on this machine. Make the forcing on a machine with the RCM data "
+            "(scripts/extract_forcing.py), and copy the .csv and .json files to the same path below forcing_data_path."
+        )
     files = list_files(settings)
     lat2d, lon2d = read_grid(next(iter(files.values()))[0], settings.spec)
     for processor in todo:
