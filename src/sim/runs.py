@@ -87,8 +87,9 @@ CFM_CONFIG_DEFAULTS: Dict[str, Any] = {"SEB": False, "meltwater_solver": DEFAULT
 # can be either value in a migrated run, so it comes from migrated.inferred_cfm_config only.
 MIGRATED_CFM_CONFIG_DEFAULTS: Dict[str, Any] = {"meltwater_solver": DEFAULT_MELTWATER_SOLVER}
 
-# cfm_config keys that are paths, not physics (as in sim.manifest): cfm_config_differences does not compare them
-_PATH_CFM_CONFIG_KEYS = ("resultsFolder",)
+# cfm_config keys that are paths or output switches, not physics (resultsFolder as in sim.manifest; step_timing is in
+# the runs from FEAT-013 on, and not in the older runs): cfm_config_differences does not compare them
+_PATH_CFM_CONFIG_KEYS = ("resultsFolder", "step_timing")
 
 
 @dataclass(frozen=True)
@@ -267,8 +268,8 @@ def cfm_config_differences(runs: List[Run]) -> Dict[str, List[Any]]:
     """The cfm_config keys whose value differs between the runs, with the value of each run (UNKNOWN for a run that does
     not know the key). A key differs if two runs that know it have different values. CFM_DEFAULT is a known value: it
     differs from a given value. A run that does not know the key (a migrated run knows only its inferred keys) is not
-    compared, so that one such run does not hide a difference between the others. The paths (resultsFolder) are not
-    compared."""
+    compared, so that one such run does not hide a difference between the others. The paths (resultsFolder) and step_timing
+    are not compared."""
     if len(runs) < 2:
         return {}
     keys = set.union(*(run.cfm_config_keys() for run in runs)) - set(_PATH_CFM_CONFIG_KEYS)
