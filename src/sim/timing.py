@@ -7,6 +7,7 @@ import logging
 import os
 import platform
 import resource
+import subprocess
 import sys
 import time
 from typing import Callable, Optional
@@ -55,8 +56,8 @@ def cpu_time_total() -> Optional[float]:
 
 
 def max_rss_mb() -> Optional[float]:
-    """The maximum resident set size of this process in MB, or None. ru_maxrss is in kB on Linux and in bytes on
-    macOS."""
+    """The maximum resident set size of this process in MiB (1024 * 1024 bytes), or None. ru_maxrss is in KiB on Linux
+    and in bytes on macOS."""
     def read():
         value = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
         return round(value / (1024 * 1024 if sys.platform == "darwin" else 1024), 1)
@@ -65,7 +66,8 @@ def max_rss_mb() -> Optional[float]:
 
 
 def cpu_model() -> Optional[str]:
-    """The "model name" line of /proc/cpuinfo, else platform.processor(), or None if both are empty."""
+    """The "model name" line of /proc/cpuinfo, else (macOS) "sysctl -n machdep.cpu.brand_string", else
+    platform.processor(), or None if all are empty."""
     def read():
         try:
             with open("/proc/cpuinfo") as file:
@@ -74,6 +76,15 @@ def cpu_model() -> Optional[str]:
                         return line.split(":", 1)[1].strip()
         except OSError:
             pass
+        if sys.platform == "darwin":
+            try:
+                brand = subprocess.run(
+                    ["sysctl", "-n", "machdep.cpu.brand_string"], capture_output=True, text=True, timeout=5
+                ).stdout.strip()
+                if brand:
+                    return brand
+            except (OSError, subprocess.SubprocessError):
+                pass
         return platform.processor() or None
 
     return or_none("cpu_model", read)
@@ -83,6 +94,7 @@ def cpus_allowed() -> Optional[int]:
     """The number of CPUs that this process can use (os.sched_getaffinity), or None where the function does not exist
     (macOS). On a Slurm node this is the allocation, not the size of the node."""
     if not hasattr(os, "sched_getaffinity"):
+        logging.warning("The timing value cpus_allowed is not in the manifest: os.sched_getaffinity does not exist")
         return None
     return or_none("cpus_allowed", lambda: len(os.sched_getaffinity(0)))
 
