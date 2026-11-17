@@ -15,14 +15,22 @@ A test that needs the real config.yaml (tests/test_reference_cfm.py) is marked w
 """
 
 import copy
+import os
+import sys
 from pathlib import Path
 
 import pytest
 import yaml
 
 import cfm_config
+from cfm_config import config
+import sim.manifest
+import sim.run
 from cfm_config import reset_share_available
+from force.cache import forcing_csv_path
+from force.model_point import ModelPoint
 from sim.manifest import reset_share_check
+from sim.run import CFMRun
 
 EXAMPLE_CONFIG = Path(__file__).resolve().parents[1] / "config.example.yaml"
 
@@ -60,3 +68,60 @@ def isolated_config(request, tmp_path_factory):
     config.update(original)
     reset_share_check()
     reset_share_available()
+
+
+# the fixtures and helpers of the run tests (tests/test_run_status.py, tests/test_timing.py)
+
+SITE = (-66.403, -63.376, "GSFC2020", "RACMO", "bucket")
+VERSION = {"label": "test", "repo": "/nowhere/CFM_main", "python": sys.executable}
+MODEL_POINT = ModelPoint("RACMO", "ANT-12_release", 261, 126, -66.4, -63.4, 1.2)
+CFM_IDENTITY = {"commit": "abc", "status": [], "code_diff_sha256": "d", "python_version": "3", "pip_freeze": ["a==1"]}
+
+
+@pytest.fixture
+def data_path(tmp_path, monkeypatch):
+    """CFM_data_path in tmp_path, with a forcing CSV for MODEL_POINT."""
+    monkeypatch.setitem(config, "CFM_data_path", str(tmp_path))
+    monkeypatch.setitem(config, "forcing_data_path", str(tmp_path / "forcing"))
+    monkeypatch.setitem(config, "cfm_config", dict(config["cfm_config"]))
+    csv = forcing_csv_path(MODEL_POINT)
+    os.makedirs(os.path.dirname(csv))
+    with open(csv, "w") as file:
+        file.write("time,TSKIN\n1979-01-01,250.0\n")
+    return tmp_path
+
+
+@pytest.fixture
+def identities(monkeypatch):
+    """Stub out the model point (which reads the RCM grid) and the identities (which run git and pip freeze)."""
+    cfm = dict(CFM_IDENTITY)
+    wrapper = {"commit": "w", "status": [], "src_tree": "tree", "run_code_version": 1, "run_code_sha256": "code"}
+    monkeypatch.setattr(sim.run, "model_point_at", lambda lat, lon, rcm_name: MODEL_POINT)
+    monkeypatch.setattr(sim.run, "measure_cfm_identity", lambda version: {**version, **cfm})
+    monkeypatch.setattr(sim.run, "check_cfm_identity", lambda identity: None)
+    monkeypatch.setattr(sim.run, "wrapper_identity", lambda: dict(wrapper))
+    monkeypatch.setattr(sim.run, "check_wrapper_identity", lambda identity: None)
+    return {"cfm": cfm, "wrapper": wrapper}
+
+
+@pytest.fixture
+def drift_not_warned(monkeypatch):
+    """Each test is a new process for the drift warning, which occurs one time in each process (FEAT-005)."""
+    monkeypatch.setattr(sim.run, "_run_code_drift_warned", False)
+
+
+def new_run(**kwargs) -> CFMRun:
+    return CFMRun(*SITE, VERSION, **kwargs)
+
+
+def folder(**kwargs) -> str:
+    return new_run(**kwargs).prepare()
+
+
+def overrides_file(tmp_path, text: str, name: str = "power_law") -> str:
+    """A --cfm-overrides file name.yaml in tmp_path with the contents text."""
+    path = tmp_path / f"{name}.yaml"
+    path.write_text(text)
+    return str(path)
+
+
