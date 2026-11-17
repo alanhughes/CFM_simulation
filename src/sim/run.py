@@ -1,6 +1,7 @@
 import copy
 import cProfile
 import json
+import math
 import logging
 import os
 import socket
@@ -18,6 +19,7 @@ from cfm_config import cfm_version as lookup_cfm_version
 from force.cache import find_forcing_csv, forcing_json_path, sha256_file
 from force.model_point import ModelPoint, model_point_at
 from sim.identity import check_cfm_identity, check_wrapper_identity, measure_cfm_identity, wrapper_identity
+from sim import timing
 from sim.manifest import (
     COMPLETE,
     FAILED,
@@ -37,7 +39,6 @@ from sim.manifest import (
     share_runs_root,
     write_manifest,
 )
-from sim import timing
 
 CFM_CONFIG_NAME = "CFMconfig.json"
 
@@ -332,6 +333,11 @@ class CFMRun:
         self._read_force_data()
         self._points["forcing_read"] = timing.clock()
         os.makedirs(results_folder, exist_ok=True)
+        if not self._profile:  # a profile of an earlier run (--profile) is not the profile of this run
+            try:
+                os.remove(os.path.join(results_folder, PROFILE_NAME))
+            except FileNotFoundError:
+                pass
 
         # run.log also stops the CFM deleting the folder at spin-up: it rmtree's resultsFolder if every file in it is
         # .json or .hdf5 (firn_density_spin.py), which would take manifest.json with it. With run.log present it only
@@ -394,7 +400,9 @@ class CFMRun:
 
         - prepare: entry of run() to the end of prepare() (the hash reads the forcing CSV for its SHA-256).
         - read_forcing: _read_force_data.
-        - make_spin_files: start of _run_cfm to the end of makeSpinFiles and the write of the CFM config.
+        - setup: the end of _read_force_data to the start of _run_cfm (the run folder, run.log and the first manifest).
+        - make_spin_files: start of _run_cfm (it has the import of the CFM) to the end of makeSpinFiles and the write of
+          the CFM config.
         - cfm_init: FirnDensityNoSpin(...), which has the spin-up when NewSpin is true.
         - loop_before_switch, loop_after_switch, write_hdf5: the CFM loop up to the first step at or after
           bucket_until_year, the loop from there, and the write of the HDF5 file. They need a CFM that has
@@ -408,6 +416,7 @@ class CFMRun:
         stages = {
             "prepare": timing.stage_time(points.get("entry"), points.get("prepared")),
             "read_forcing": timing.stage_time(points.get("prepared"), points.get("forcing_read")),
+            "setup": timing.stage_time(points.get("forcing_read"), points.get("cfm_start")),
             "make_spin_files": timing.stage_time(points.get("cfm_start"), points.get("spin_files_made")),
             "cfm_init": timing.stage_time(points.get("init_start"), points.get("init_end")),
         }
@@ -429,7 +438,7 @@ class CFMRun:
         This code runs in the process of sim.worker, so the stages and cpu_s_total cover the wrapper and the CFM in the
         worker. They do not cover the forcing extraction in scripts/run_cfm.py, which is in the parent process.
 
-        - cpu_s_total, max_rss_mb: getrusage of this process. max_rss_mb is in MB on Linux and on macOS.
+        - cpu_s_total, max_rss_mb: getrusage of this process. max_rss_mb is in MiB on Linux and on macOS.
         - loadavg_start, loadavg_end: os.getloadavg at the entry of run() and now.
         - cpu_model, cpu_count, cpus_allowed, slurm, threads: see sim.timing.machine_data.
         - profiled: whether the run was under cProfile (the stage times are then longer).
@@ -701,8 +710,8 @@ class CFMRun:
         This code is mostly copied from main.py in the CFM repository.
         """
 
-        makeSpinFiles, FirnDensityNoSpin = import_cfm(self._cfm_version["repo"])
         self._points["cfm_start"] = timing.clock()
+        makeSpinFiles, FirnDensityNoSpin = import_cfm(self._cfm_version["repo"])
 
         # format the CFM forcing data (including creating the spin up)
         # climateTS is a dictionary with the various climate fields needed, in the correct units.
@@ -752,18 +761,34 @@ class CFMRun:
             SEBfluxes=SEBfluxes,
         )
         self._points["init_end"] = timing.clock()
-        firn.time_evolve()
-        self._points["evolve_end"] = timing.clock()
-        self._step_timing_stages = self._read_step_timing_stages(firn)
+        try:
+            firn.time_evolve()
+        finally:  # a run that fails in the loop keeps the loop times that the CFM set
+            self._points["evolve_end"] = timing.clock()
+            self._step_timing_stages = self._read_step_timing_stages(firn)
         self._record_cfm_settings(firn)
         self._points["settings_recorded"] = timing.clock()
 
     @staticmethod
     def _read_step_timing_stages(firn) -> dict | None:
-        """firn.step_timing_stages (a dict of loop_start, switch, loop_end, write_end, each {"wall", "cpu"}; switch is
-        None if the loop had no switch), or None for a CFM without it or with a value that is not as expected."""
+        """firn.step_timing_stages (a dict of loop_start, switch, loop_end, write_end, each {"wall", "cpu"}; all but
+        loop_start are None or missing if the loop had no switch or failed before that point), or None for a CFM without it or with a value that is not as expected."""
         stages = getattr(firn, "step_timing_stages", None)
         if stages is None:
+            return None
+        try:
+            if stages["loop_start"] is None:
+                raise ValueError("loop_start is None")
+            for name in ("loop_start", "switch", "loop_end", "write_end"):
+                if stages.get(name) is None:
+                    continue  # no switch, or the loop failed before this point
+                for key in ("wall", "cpu"):
+                    value = stages[name][key]
+                    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+                        raise ValueError(f"{name}.{key} is {value!r}")
+            return stages
+        except Exception as error:
+            logging.warning(f"firn.step_timing_stages is not as expected, so it is not in the manifest: {error!r}")
             return None
         try:
             for name in ("loop_start", "loop_end", "write_end"):

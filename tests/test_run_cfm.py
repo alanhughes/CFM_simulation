@@ -118,3 +118,11 @@ def test_a_bad_cfm_overrides_file_stops_before_the_forcing(calls, tmp_path, caps
         run_cfm.main(ARGS + ["--cfm-overrides", str(path)])
     assert "sets liquid" in capsys.readouterr().err
     assert calls["forcing"] == [] and calls["commands"] == []
+
+
+def test_profile_is_given_to_the_worker(calls):
+    """FEAT-013: --profile reaches the worker command; without it the worker gets no --profile."""
+    assert run_cfm.main(ARGS + ["--profile"]) == 0
+    assert run_cfm.main(ARGS) == 0
+    with_profile, without = calls["commands"]
+    assert "--profile" in with_profile and "--profile" not in without
