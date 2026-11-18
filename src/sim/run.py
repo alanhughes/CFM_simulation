@@ -790,12 +790,3 @@ class CFMRun:
         except Exception as error:
             logging.warning(f"firn.step_timing_stages is not as expected, so it is not in the manifest: {error!r}")
             return None
-        try:
-            for name in ("loop_start", "loop_end", "write_end"):
-                stages[name]["wall"], stages[name]["cpu"]
-            if stages.get("switch") is not None:
-                stages["switch"]["wall"], stages["switch"]["cpu"]
-            return stages
-        except Exception as error:
-            logging.warning(f"firn.step_timing_stages is not as expected, so it is not in the manifest: {error!r}")
-            return None
