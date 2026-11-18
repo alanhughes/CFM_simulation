@@ -144,7 +144,9 @@ def test_conflict_exit_code(roots):
 def test_differ_classes(roots, make_share):
     local, share = roots
     make_run(local)
-    kwargs = {"data": {"data": b"other"}, "status": {"status": "failed"}, "extra_file": {}, "no_manifest": {}}[make_share]
+    kwargs = {"data": {"data": b"other"}, "status": {"status": "failed"}, "extra_file": {}, "no_manifest": {}}[
+        make_share
+    ]
     folder = make_run(share, **kwargs)
     if make_share == "extra_file":
         (folder / "extra.hdf5").write_bytes(b"x")
@@ -516,12 +518,18 @@ def test_fadvise_warning_once(roots, monkeypatch, capsys):
     local, share = roots
     make_run(local)
 
+    calls = []
+
     def fadvise(fd, offset, length, advice):
+        calls.append(fd)
         raise OSError(errno.EINVAL, "invalid")
 
     monkeypatch.setattr(sync, "_warned_fadvise", False)
-    monkeypatch.setattr(os, "posix_fadvise", fadvise)
+    # raising=False: macOS has no posix_fadvise and no POSIX_FADV_DONTNEED
+    monkeypatch.setattr(os, "posix_fadvise", fadvise, raising=False)
+    monkeypatch.setattr(os, "POSIX_FADV_DONTNEED", getattr(os, "POSIX_FADV_DONTNEED", 4), raising=False)
     assert sync_args("--apply") == 0
+    assert len(calls) > 1
     assert capsys.readouterr().err.count("posix_fadvise") == 1
 
 
@@ -1022,4 +1030,7 @@ def test_sync_copies_the_timing_files(roots):
     assert sync_args("--apply") == 0
     target = share / "runs" / REL
     for name in ("step_timing.csv", "cfm_profile.prof"):
-        assert hashlib.sha256((target / name).read_bytes()).digest() == hashlib.sha256((source / name).read_bytes()).digest()
+        assert (
+            hashlib.sha256((target / name).read_bytes()).digest()
+            == hashlib.sha256((source / name).read_bytes()).digest()
+        )

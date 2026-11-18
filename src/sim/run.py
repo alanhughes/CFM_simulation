@@ -382,7 +382,8 @@ class CFMRun:
             log_handler.close()
 
     def _run_cfm_profiled(self, results_folder: str) -> None:
-        """Run _run_cfm under cProfile and write the profile to PROFILE_NAME in results_folder, also if the run fails."""
+        """Run _run_cfm under cProfile and write the profile to PROFILE_NAME in results_folder, also if the run
+        fails."""
         profiler = cProfile.Profile()
         profiler.enable()
         try:
@@ -772,7 +773,8 @@ class CFMRun:
     @staticmethod
     def _read_step_timing_stages(firn) -> dict | None:
         """firn.step_timing_stages (a dict of loop_start, switch, loop_end, write_end, each {"wall", "cpu"}; all but
-        loop_start are None or missing if the loop had no switch or failed before that point), or None for a CFM without it or with a value that is not as expected."""
+        loop_start are None or missing if the loop had no switch or failed before that point), or None for a CFM without
+        it or with a value that is not as expected."""
         stages = getattr(firn, "step_timing_stages", None)
         if stages is None:
             return None
