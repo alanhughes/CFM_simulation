@@ -3,12 +3,13 @@ one process can only import one CFM:
 
     <python> -m sim.worker --lat <lat> --lon <lon> [--site <name>] --physrho <physrho> --rcm <rcm> --liquid <liquid>
         --cfm <label> --start-year <year> --end-year <year> [--requested-end-year <year> --end-year-source <source>]
-        [--cfm-overrides <file.yaml>] [--force]
+        [--cfm-overrides <file.yaml>] [--profile] [--force]
 
 The years are the ones that scripts/run_cfm.py resolved (force.years.run_years, DISC-001). The worker uses them as they
 are and does not resolve them again, so the run uses the forcing CSV that run_cfm.py made. --requested-end-year and
 --end-year-source (config or cli) only go into the manifest. --cfm-overrides is a YAML file of cfm_config keys that
 sim.run.CFMRun puts on top of the cfm_config of the run, before the run hash (see sim.run.load_cfm_overrides).
+--profile runs the CFM under cProfile and writes cfm_profile.prof in the run folder.
 """
 
 import argparse
@@ -33,6 +34,7 @@ if __name__ == "__main__":
     parser.add_argument("--requested-end-year", type=int, help="the end year that was asked for (default: --end-year)")
     parser.add_argument("--end-year-source", choices=("config", "cli"), default="cli", help="where it came from")
     parser.add_argument("--cfm-overrides", help="YAML file of cfm_config keys, in cfm_config and in the run hash")
+    parser.add_argument("--profile", action="store_true", help="write cfm_profile.prof in the run folder")
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
 
@@ -50,4 +52,5 @@ if __name__ == "__main__":
         requested_end_year=args.end_year if args.requested_end_year is None else args.requested_end_year,
         end_year_source=args.end_year_source,
         cfm_overrides=args.cfm_overrides,
+        profile=args.profile,
     ).run()

@@ -1011,3 +1011,15 @@ def test_runs_absolute_pattern(roots):
     make_run(local, rel=REL_C, hash_="c" * 64)
     assert sync_args("--runs", str(local / "runs" / "RACMO_259_136" / "*" / "ab871c8" / "*"), "--apply") == 0
     assert (share / "runs" / REL_B).exists() and not (share / "runs" / REL_C).exists()
+
+
+def test_sync_copies_the_timing_files(roots):
+    """FEAT-013: step_timing.csv and cfm_profile.prof go to the share with the same content."""
+    local, share = roots
+    source = make_run(local)
+    (source / "step_timing.csv").write_text("step,wall_s\n1,0.5\n" * 100)
+    (source / "cfm_profile.prof").write_bytes(b"profile")
+    assert sync_args("--apply") == 0
+    target = share / "runs" / REL
+    for name in ("step_timing.csv", "cfm_profile.prof"):
+        assert hashlib.sha256((target / name).read_bytes()).digest() == hashlib.sha256((source / name).read_bytes()).digest()

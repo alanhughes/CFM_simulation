@@ -24,24 +24,10 @@ from force.model_point import ModelPoint
 from sim.manifest import COMPLETE, FAILED, RUNNING, read_manifest, write_manifest
 from sim.run import CFMRun
 
-SITE = (-66.403, -63.376, "GSFC2020", "RACMO", "bucket")
-VERSION = {"label": "test", "repo": "/nowhere/CFM_main", "python": sys.executable}
-MODEL_POINT = ModelPoint("RACMO", "ANT-12_release", 261, 126, -66.4, -63.4, 1.2)
-CFM_IDENTITY = {"commit": "abc", "status": [], "code_diff_sha256": "d", "python_version": "3", "pip_freeze": ["a==1"]}
+# the fixtures and helpers of the run tests are in conftest.py
+from conftest import CFM_IDENTITY, MODEL_POINT, SITE, VERSION, folder, new_run, overrides_file  # noqa: F401
 
-
-@pytest.fixture
-def data_path(tmp_path, monkeypatch):
-    """CFM_data_path in tmp_path, with a forcing CSV for MODEL_POINT."""
-    monkeypatch.setitem(config, "CFM_data_path", str(tmp_path))
-    monkeypatch.setitem(config, "forcing_data_path", str(tmp_path / "forcing"))
-    monkeypatch.setitem(config, "cfm_config", dict(config["cfm_config"]))
-    csv = forcing_csv_path(MODEL_POINT)
-    os.makedirs(os.path.dirname(csv))
-    with open(csv, "w") as file:
-        file.write("time,TSKIN\n1979-01-01,250.0\n")
-    return tmp_path
-
+pytestmark = pytest.mark.usefixtures("identities", "drift_not_warned")
 
 @pytest.fixture
 def cfm_calls(monkeypatch):
@@ -54,33 +40,6 @@ def cfm_calls(monkeypatch):
 
     monkeypatch.setattr(CFMRun, "_run_cfm", run_cfm)
     return calls
-
-
-@pytest.fixture(autouse=True)
-def identities(monkeypatch):
-    """Stub out the model point (which reads the RCM grid) and the identities (which run git and pip freeze)."""
-    cfm = dict(CFM_IDENTITY)
-    wrapper = {"commit": "w", "status": [], "src_tree": "tree", "run_code_version": 1, "run_code_sha256": "code"}
-    monkeypatch.setattr(sim.run, "model_point_at", lambda lat, lon, rcm_name: MODEL_POINT)
-    monkeypatch.setattr(sim.run, "measure_cfm_identity", lambda version: {**version, **cfm})
-    monkeypatch.setattr(sim.run, "check_cfm_identity", lambda identity: None)
-    monkeypatch.setattr(sim.run, "wrapper_identity", lambda: dict(wrapper))
-    monkeypatch.setattr(sim.run, "check_wrapper_identity", lambda identity: None)
-    return {"cfm": cfm, "wrapper": wrapper}
-
-
-@pytest.fixture(autouse=True)
-def drift_not_warned(monkeypatch):
-    """Each test is a new process for the drift warning, which occurs one time in each process (FEAT-005)."""
-    monkeypatch.setattr(sim.run, "_run_code_drift_warned", False)
-
-
-def new_run(**kwargs) -> CFMRun:
-    return CFMRun(*SITE, VERSION, **kwargs)
-
-
-def folder(**kwargs) -> str:
-    return new_run(**kwargs).prepare()
 
 
 def dead_pid() -> int:
@@ -785,13 +744,6 @@ def test_run_checks_the_json_of_a_share_forcing_csv(data_path, monkeypatch):
 
 
 # --cfm-overrides (FEAT-011)
-
-
-def overrides_file(tmp_path, text: str, name: str = "power_law") -> str:
-    """A --cfm-overrides file name.yaml in tmp_path with the contents text."""
-    path = tmp_path / f"{name}.yaml"
-    path.write_text(text)
-    return str(path)
 
 
 def test_without_overrides_the_hash_is_as_before(data_path):

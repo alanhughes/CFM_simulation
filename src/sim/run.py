@@ -1,5 +1,7 @@
 import copy
+import cProfile
 import json
+import math
 import logging
 import os
 import socket
@@ -17,6 +19,7 @@ from cfm_config import cfm_version as lookup_cfm_version
 from force.cache import find_forcing_csv, forcing_json_path, sha256_file
 from force.model_point import ModelPoint, model_point_at
 from sim.identity import check_cfm_identity, check_wrapper_identity, measure_cfm_identity, wrapper_identity
+from sim import timing
 from sim.manifest import (
     COMPLETE,
     FAILED,
@@ -39,6 +42,8 @@ from sim.manifest import (
 
 CFM_CONFIG_NAME = "CFMconfig.json"
 
+PROFILE_NAME = "cfm_profile.prof"
+
 # the cfm_config keys that the wrapper sets for each run, which a section of cfm_config_by_liquid must not set
 _WRAPPER_SET_CFM_CONFIG_KEYS = ("liquid", "physRho", "resultsFolder")
 
@@ -53,6 +58,7 @@ _RUN_CFM_SET_KEYS = (
     "HbaseSpin",
     "DIPhorizon",
     "keep_firnthickness",
+    "step_timing",
     "grid_outputs",
 )
 
@@ -223,6 +229,7 @@ class CFMRun:
         requested_end_year: int | None = None,
         end_year_source: str = "config",
         cfm_overrides: str | None = None,
+        profile: bool = False,
     ) -> None:
         """Initialize CFM Run with configuration from config.yaml.
 
@@ -249,6 +256,8 @@ class CFMRun:
                 hash. load_cfm_overrides checks the file and stops with ConfigError if it is not correct. The stem of
                 the file goes into the manifest as run.config_name, and its absolute path as run.cfm_overrides, for an
                 analysis to name the run. Neither is in the hash. None: no overrides, and the hash is as before.
+            profile (bool): run _run_cfm under cProfile and write cfm_profile.prof in the run folder (FEAT-013). The
+                profile adds overhead, so the manifest has timing.profiled true. Not in the hash.
         """
 
         # all these need to be passed in because they vary by run
@@ -298,6 +307,11 @@ class CFMRun:
         self._run_hash: str | None = None
         self._cfm_identity: dict = {}
         self._wrapper_identity: dict = {}
+        self._profile: bool = profile
+        # the clock() values of the points in a run, for the timing block of the manifest (FEAT-013)
+        self._points: dict = {}
+        self._loadavg_start: list | None = None
+        self._step_timing_stages: dict | None = None
 
     def run(self) -> None:
         """Run the CFM model with the specified configuration and forcing data, unless a complete run exists.
@@ -305,14 +319,25 @@ class CFMRun:
         The run folder is runs/<ModelPoint.tag>/<physRho>_<liquid>_<start>-<end>/<cfm-label>/<hash8>/ (see
         sim.manifest). The run's state is kept in manifest.json in that folder: "running" while the CFM runs, then
         "complete" or "failed". Only a "complete" run with the same run hash is skipped, and --force reruns even that.
+
+        The manifest gets a "timing" block (see _timing_block), also for a failed run. runtime_s is as before.
         """
 
+        self._points["entry"] = timing.clock()
+        self._loadavg_start = timing.loadavg()
         results_folder = self.prepare()
+        self._points["prepared"] = timing.clock()
         if not self._should_run(results_folder):
             return
 
         self._read_force_data()
+        self._points["forcing_read"] = timing.clock()
         os.makedirs(results_folder, exist_ok=True)
+        if not self._profile:  # a profile of an earlier run (--profile) is not the profile of this run
+            try:
+                os.remove(os.path.join(results_folder, PROFILE_NAME))
+            except FileNotFoundError:
+                pass
 
         # run.log also stops the CFM deleting the folder at spin-up: it rmtree's resultsFolder if every file in it is
         # .json or .hdf5 (firn_density_spin.py), which would take manifest.json with it. With run.log present it only
@@ -327,7 +352,10 @@ class CFMRun:
 
         start = time.monotonic()
         try:
-            self._run_cfm()
+            if self._profile:
+                self._run_cfm_profiled(results_folder)
+            else:
+                self._run_cfm()
         except BaseException as error:  # also KeyboardInterrupt, so a ctrl-C run is marked failed, not running
             self._manifest.update(
                 status=FAILED,
@@ -335,17 +363,102 @@ class CFMRun:
                 runtime_s=round(time.monotonic() - start, 1),
                 error=f"{type(error).__name__}: {error}",
                 traceback=traceback.format_exc(),
+                timing=self._timing_block(),
             )
             write_manifest(results_folder, self._manifest)
             logging.error(f"CFM run failed, see {results_folder}/manifest.json")
             raise
         else:
-            self._manifest.update(status=COMPLETE, finished=now(), runtime_s=round(time.monotonic() - start, 1))
+            self._manifest.update(
+                status=COMPLETE,
+                finished=now(),
+                runtime_s=round(time.monotonic() - start, 1),
+                timing=self._timing_block(),
+            )
             write_manifest(results_folder, self._manifest)
             logging.info(f"CFM run complete in {self._manifest['runtime_s']} s.")
         finally:
             logging.getLogger().removeHandler(log_handler)
             log_handler.close()
+
+    def _run_cfm_profiled(self, results_folder: str) -> None:
+        """Run _run_cfm under cProfile and write the profile to PROFILE_NAME in results_folder, also if the run fails."""
+        profiler = cProfile.Profile()
+        profiler.enable()
+        try:
+            self._run_cfm()
+        finally:
+            profiler.disable()
+            try:
+                profiler.dump_stats(os.path.join(results_folder, PROFILE_NAME))
+            except Exception as error:
+                logging.warning(f"The profile is not written: {error!r}")
+
+    def _stages(self) -> dict:
+        """{stage name: {"wall_s", "cpu_s"}} of the stages that were reached, in order of time. The points are the
+        clock() values in self._points; the three loop stages come from self._step_timing_stages.
+
+        - prepare: entry of run() to the end of prepare() (the hash reads the forcing CSV for its SHA-256).
+        - read_forcing: _read_force_data.
+        - setup: the end of _read_force_data to the start of _run_cfm (the run folder, run.log and the first manifest).
+        - make_spin_files: start of _run_cfm (it has the import of the CFM) to the end of makeSpinFiles and the write of
+          the CFM config.
+        - cfm_init: FirnDensityNoSpin(...), which has the spin-up when NewSpin is true.
+        - loop_before_switch, loop_after_switch, write_hdf5: the CFM loop up to the first step at or after
+          bucket_until_year, the loop from there, and the write of the HDF5 file. They need a CFM that has
+          step_timing_stages. With a CFM that has not, one stage time_evolve is in their place. Without a switch,
+          loop_before_switch is the whole loop and there is no loop_after_switch.
+        - record_settings: _record_cfm_settings.
+
+        A stage that was not reached (a run that failed) is not in the result.
+        """
+        points = self._points
+        stages = {
+            "prepare": timing.stage_time(points.get("entry"), points.get("prepared")),
+            "read_forcing": timing.stage_time(points.get("prepared"), points.get("forcing_read")),
+            "setup": timing.stage_time(points.get("forcing_read"), points.get("cfm_start")),
+            "make_spin_files": timing.stage_time(points.get("cfm_start"), points.get("spin_files_made")),
+            "cfm_init": timing.stage_time(points.get("init_start"), points.get("init_end")),
+        }
+        loop = self._step_timing_stages
+        if loop is not None:
+            switch = loop.get("switch")
+            stages["loop_before_switch"] = timing.stage_time(loop.get("loop_start"), switch or loop.get("loop_end"))
+            if switch is not None:
+                stages["loop_after_switch"] = timing.stage_time(switch, loop.get("loop_end"))
+            stages["write_hdf5"] = timing.stage_time(loop.get("loop_end"), loop.get("write_end"))
+        else:
+            stages["time_evolve"] = timing.stage_time(points.get("init_end"), points.get("evolve_end"))
+        stages["record_settings"] = timing.stage_time(points.get("evolve_end"), points.get("settings_recorded"))
+        return {name: value for name, value in stages.items() if value is not None}
+
+    def _timing_block(self) -> dict | None:
+        """The "timing" block of the manifest (FEAT-013): the stage times (see _stages) and the machine data.
+
+        This code runs in the process of sim.worker, so the stages and cpu_s_total cover the wrapper and the CFM in the
+        worker. They do not cover the forcing extraction in scripts/run_cfm.py, which is in the parent process.
+
+        - cpu_s_total, max_rss_mb: getrusage of this process. max_rss_mb is in MiB on Linux and on macOS.
+        - loadavg_start, loadavg_end: os.getloadavg at the entry of run() and now.
+        - cpu_model, cpu_count, cpus_allowed, slurm, threads: see sim.timing.machine_data.
+        - profiled: whether the run was under cProfile (the stage times are then longer).
+
+        A value that cannot be read is None, with a warning. A failure of the whole block gives None: it never fails
+        the run.
+        """
+        try:
+            return {
+                "stages": self._stages(),
+                "cpu_s_total": timing.cpu_time_total(),
+                "max_rss_mb": timing.max_rss_mb(),
+                "loadavg_start": self._loadavg_start,
+                "loadavg_end": timing.loadavg(),
+                **timing.machine_data(),
+                "profiled": self._profile,
+            }
+        except Exception as error:
+            logging.warning(f"The timing is not in the manifest: {error!r}")
+            return None
 
     def prepare(self) -> str:
         """Measure the CFM and the wrapper, find the forcing CSV, and make the run hash. Returns the run folder.
@@ -597,6 +710,7 @@ class CFMRun:
         This code is mostly copied from main.py in the CFM repository.
         """
 
+        self._points["cfm_start"] = timing.clock()
         makeSpinFiles, FirnDensityNoSpin = import_cfm(self._cfm_version["repo"])
 
         # format the CFM forcing data (including creating the spin up)
@@ -626,6 +740,9 @@ class CFMRun:
         self._cfm_config["DIPhorizon"] = np.floor(0.8 * grid_bottom)  # firn air content, depth integrated porosity
         self._cfm_config["keep_firnthickness"] = True
         self._cfm_config["grid_outputs"] = True
+        # the CFM writes step_timing.csv and sets firn.step_timing_stages. Always on, not an option: runs with the same
+        # hash must have the same files (sync_runs.py). It is set after the hash, so it is not in the hash
+        self._cfm_config["step_timing"] = True
 
         # write updated config to json, in the run folder. run.log is in the folder, so the CFM does not delete it
         config_path = os.path.join(self._cfm_config["resultsFolder"], CFM_CONFIG_NAME)
@@ -633,13 +750,52 @@ class CFMRun:
             fp.write(json.dumps(self._cfm_config, sort_keys=False, indent=4, separators=(",", ": ")))
         self._manifest["cfm_config"] = self._cfm_config
         write_manifest(self._cfm_config["resultsFolder"], self._manifest)
+        self._points["spin_files_made"] = timing.clock()
 
         ### Create CFM instance by passing config file and forcing data, then run the model
+        self._points["init_start"] = timing.clock()
         firn = FirnDensityNoSpin(
             config_path,
             climateTS=climateTS,
             NewSpin=self._cfm_config["NewSpin"],
             SEBfluxes=SEBfluxes,
         )
-        firn.time_evolve()
+        self._points["init_end"] = timing.clock()
+        try:
+            firn.time_evolve()
+        finally:  # a run that fails in the loop keeps the loop times that the CFM set
+            self._points["evolve_end"] = timing.clock()
+            self._step_timing_stages = self._read_step_timing_stages(firn)
         self._record_cfm_settings(firn)
+        self._points["settings_recorded"] = timing.clock()
+
+    @staticmethod
+    def _read_step_timing_stages(firn) -> dict | None:
+        """firn.step_timing_stages (a dict of loop_start, switch, loop_end, write_end, each {"wall", "cpu"}; all but
+        loop_start are None or missing if the loop had no switch or failed before that point), or None for a CFM without it or with a value that is not as expected."""
+        stages = getattr(firn, "step_timing_stages", None)
+        if stages is None:
+            return None
+        try:
+            if stages["loop_start"] is None:
+                raise ValueError("loop_start is None")
+            for name in ("loop_start", "switch", "loop_end", "write_end"):
+                if stages.get(name) is None:
+                    continue  # no switch, or the loop failed before this point
+                for key in ("wall", "cpu"):
+                    value = stages[name][key]
+                    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+                        raise ValueError(f"{name}.{key} is {value!r}")
+            return stages
+        except Exception as error:
+            logging.warning(f"firn.step_timing_stages is not as expected, so it is not in the manifest: {error!r}")
+            return None
+        try:
+            for name in ("loop_start", "loop_end", "write_end"):
+                stages[name]["wall"], stages[name]["cpu"]
+            if stages.get("switch") is not None:
+                stages["switch"]["wall"], stages["switch"]["cpu"]
+            return stages
+        except Exception as error:
+            logging.warning(f"firn.step_timing_stages is not as expected, so it is not in the manifest: {error!r}")
+            return None
