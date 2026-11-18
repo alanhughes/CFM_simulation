@@ -48,6 +48,7 @@ def loadavg() -> Optional[list]:
 def cpu_time_total() -> Optional[float]:
     """The user plus system CPU time of this process in seconds (getrusage), or None. In a run it is the process of
     sim.worker, so the wrapper and the CFM are in it."""
+
     def read():
         usage = resource.getrusage(resource.RUSAGE_SELF)
         return round(usage.ru_utime + usage.ru_stime, 3)
@@ -58,6 +59,7 @@ def cpu_time_total() -> Optional[float]:
 def max_rss_mb() -> Optional[float]:
     """The maximum resident set size of this process in MiB (1024 * 1024 bytes), or None. ru_maxrss is in KiB on Linux
     and in bytes on macOS."""
+
     def read():
         value = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
         return round(value / (1024 * 1024 if sys.platform == "darwin" else 1024), 1)
@@ -68,6 +70,7 @@ def max_rss_mb() -> Optional[float]:
 def cpu_model() -> Optional[str]:
     """The "model name" line of /proc/cpuinfo, else (macOS) "sysctl -n machdep.cpu.brand_string", else
     platform.processor(), or None if all are empty."""
+
     def read():
         try:
             with open("/proc/cpuinfo") as file:
@@ -105,7 +108,8 @@ def environment(names) -> dict:
 
 
 def machine_data() -> dict:
-    """The CPU model, the CPU counts, the Slurm variables and the thread variables that are set, for the timing block."""
+    """The CPU model, the CPU counts, the Slurm variables and the thread variables that are set, for the timing
+    block."""
     return {
         "cpu_model": cpu_model(),
         "cpu_count": or_none("cpu_count", os.cpu_count),

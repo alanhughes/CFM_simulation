@@ -268,8 +268,8 @@ def cfm_config_differences(runs: List[Run]) -> Dict[str, List[Any]]:
     """The cfm_config keys whose value differs between the runs, with the value of each run (UNKNOWN for a run that does
     not know the key). A key differs if two runs that know it have different values. CFM_DEFAULT is a known value: it
     differs from a given value. A run that does not know the key (a migrated run knows only its inferred keys) is not
-    compared, so that one such run does not hide a difference between the others. The paths (resultsFolder) and step_timing
-    are not compared."""
+    compared, so that one such run does not hide a difference between the others. The paths (resultsFolder) and
+    step_timing are not compared."""
     if len(runs) < 2:
         return {}
     keys = set.union(*(run.cfm_config_keys() for run in runs)) - set(_PATH_CFM_CONFIG_KEYS)

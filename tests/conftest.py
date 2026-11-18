@@ -123,5 +123,3 @@ def overrides_file(tmp_path, text: str, name: str = "power_law") -> str:
     path = tmp_path / f"{name}.yaml"
     path.write_text(text)
     return str(path)
-
-

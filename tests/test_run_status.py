@@ -20,7 +20,6 @@ import sim.manifest
 import sim.run
 from cfm_config import ConfigError, config
 from force.cache import forcing_csv_path, forcing_json_path
-from force.model_point import ModelPoint
 from sim.manifest import COMPLETE, FAILED, RUNNING, read_manifest, write_manifest
 from sim.run import CFMRun
 
@@ -28,6 +27,7 @@ from sim.run import CFMRun
 from conftest import CFM_IDENTITY, MODEL_POINT, SITE, VERSION, folder, new_run, overrides_file  # noqa: F401
 
 pytestmark = pytest.mark.usefixtures("identities", "drift_not_warned")
+
 
 @pytest.fixture
 def cfm_calls(monkeypatch):
@@ -123,7 +123,9 @@ def fake_cfm(monkeypatch, config_used, darcy_defaults="absent"):
     if darcy_defaults != "absent":
         melt._DARCY_DEFAULTS = darcy_defaults
     monkeypatch.setitem(sys.modules, "melt", melt)
-    monkeypatch.setattr(sim.run, "import_cfm", lambda repo: (lambda *a, **k: ({"SUBLIM": 1.0}, 12.0, 5.0, 10.0, 100.0, None), Firn))
+    monkeypatch.setattr(
+        sim.run, "import_cfm", lambda repo: (lambda *a, **k: ({"SUBLIM": 1.0}, 12.0, 5.0, 10.0, 100.0, None), Firn)
+    )
 
 
 def test_run_records_the_cfm_config_used(data_path, monkeypatch):

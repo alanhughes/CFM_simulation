@@ -4,7 +4,6 @@ The CFM is a fake: makeSpinFiles and FirnDensityNoSpin are stubs, as in tests/te
 runs and the stage logic is tested. Only the machine data is read from the real machine.
 """
 
-import hashlib
 import importlib.util
 import logging
 import os
@@ -145,8 +144,12 @@ def test_the_loop_stages_are_the_loop_of_the_cfm(data_path, monkeypatch):
     monkeypatch.setattr(CFMRun, "_read_step_timing_stages", staticmethod(spy))
     stages = run_and_read()["timing"]["stages"]
     loop = recorded["loop_end"]["wall"] - recorded["loop_start"]["wall"]
-    assert stages["loop_before_switch"]["wall_s"] + stages["loop_after_switch"]["wall_s"] == pytest.approx(loop, abs=0.002)
-    assert stages["write_hdf5"]["wall_s"] == pytest.approx(recorded["write_end"]["wall"] - recorded["loop_end"]["wall"], abs=0.002)
+    assert stages["loop_before_switch"]["wall_s"] + stages["loop_after_switch"]["wall_s"] == pytest.approx(
+        loop, abs=0.002
+    )
+    assert stages["write_hdf5"]["wall_s"] == pytest.approx(
+        recorded["write_end"]["wall"] - recorded["loop_end"]["wall"], abs=0.002
+    )
 
 
 def test_a_loop_without_a_switch_has_no_after_switch_stage(data_path, monkeypatch):
@@ -162,7 +165,15 @@ def test_an_old_cfm_has_one_time_evolve_stage(data_path, monkeypatch):
     fake_cfm(monkeypatch, "old_cfm")
     manifest = run_and_read()
     stages = manifest["timing"]["stages"]
-    assert list(stages) == ["prepare", "read_forcing", "setup", "make_spin_files", "cfm_init", "time_evolve", "record_settings"]
+    assert list(stages) == [
+        "prepare",
+        "read_forcing",
+        "setup",
+        "make_spin_files",
+        "cfm_init",
+        "time_evolve",
+        "record_settings",
+    ]
     assert stages["time_evolve"]["wall_s"] >= 0.015
     assert manifest["status"] == COMPLETE
 
@@ -348,7 +359,8 @@ REFERENCE_HASH = "51a14e6aacff1ba30b41caf49d7f848d62f507841785bd3099193aefbd2405
 
 def test_the_hash_of_fixed_inputs_is_the_hash_before_feat_013(data_path):
     """Computed with the code of bc6e941 (before FEAT-013) for these inputs: the test config, SITE, VERSION,
-    CFM_IDENTITY and the forcing CSV of data_path. Change this value only for a change that is meant to change hashes."""
+    CFM_IDENTITY and the forcing CSV of data_path. Change this value only for a change that is meant to change
+    hashes."""
     run = new_run()
     run.prepare()
     assert run._run_hash == REFERENCE_HASH

@@ -41,15 +41,17 @@ physRho (use --liquid and --physrho), resultsFolder, or a key that the run sets 
 not correct. The manifest records the file stem as run.config_name and the absolute path as run.cfm_overrides; they
 are not in the hash. The worker reads the file when it starts, so do not change the file while a run starts.
 
-The manifest of each run has a "timing" block: the time of each stage, the CPU time, the maximum RSS and the machine data
-(FEAT-013). The CFM writes step_timing.csv in the run folder. A stage time covers the worker process: it does not
+The manifest of each run has a "timing" block: the time of each stage, the CPU time, the maximum RSS and the machine
+data (FEAT-013). The CFM writes step_timing.csv in the run folder. A stage time covers the worker process: it does not
 cover the forcing extraction here.
 
 --profile runs the CFM under cProfile and writes cfm_profile.prof in the run folder (read it with pstats). The manifest
 then has timing.profiled true, and the stage times are longer than without the profile, so leave the run out of a timing
 analysis. The profile is not in the run hash, so a complete run with the same hash is skipped: an existing run needs
 --force. A profiled run has one file more than an unprofiled run with the same hash, and sync_runs.py then reports the
-two copies as different. Use a separate CFM_data_path for profiled runs, not the data path of the run tree.
+two copies as different. Use a separate CFM_data_path for profiled runs, not the data path of the run tree. Then set
+forcing_data_path to the main forcing cache: its default is {CFM_data_path}/forcing, which holds the forcing CSVs and
+the RCM index, so without it the run extracts the forcing again or, with forcing_cache_only, stops.
 """
 
 import argparse
@@ -119,7 +121,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "--profile",
         action="store_true",
         help="run the CFM under cProfile and write cfm_profile.prof in the run folder. The run is slower. Use a "
-        "separate CFM_data_path (a profiled run has an extra file), and --force to profile an existing complete run",
+        "separate CFM_data_path (a profiled run has an extra file) with forcing_data_path set to the main forcing "
+        "cache, and --force to profile an existing complete run",
     )
     add_year_arguments(parser)
 
