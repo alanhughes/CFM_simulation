@@ -47,6 +47,19 @@ PROFILE_NAME = "cfm_profile.prof"
 # the cfm_config keys that the wrapper sets for each run, which a section of cfm_config_by_liquid must not set
 _WRAPPER_SET_CFM_CONFIG_KEYS = ("liquid", "physRho", "resultsFolder")
 
+# the warnings of a resingledomain (R1M) run (FEAT-014). The CFM prints its own warning of the same kind too
+RESINGLEDOMAIN_WARNING = (
+    "The liquid scheme resingledomain (R1M) is in development in the CFM (the CFM prints its own warning too). "
+    "It does not read the darcy keys (cfm_config_by_liquid.darcy, or the *_darcy keys of --cfm-overrides): it has its "
+    "own impermeable density, 810 kg/m3, hard-coded in re_snowpack.py. At CI-0 it stopped at modeltime 1981.89 in two "
+    "VM runs (KB-38, then KB-36: z not increasing after regrid22, then NaN in the heat solve)."
+)
+RESINGLEDOMAIN_DARCY_KEYS_WARNING = (
+    "This resingledomain (R1M) run has the darcy keys {keys} in its cfm_config (from cfm_config, a "
+    "cfm_config_by_liquid section or --cfm-overrides). resingledomain does not read them, so they do nothing, but they "
+    "are in the run hash."
+)
+
 # the cfm_config keys that CFMRun._run_cfm sets after the run hash is made, from the forcing (makeSpinFiles) or as fixed
 # values. A value for them in a --cfm-overrides file would go into the hash but not to the CFM, so the file must not
 # set them. tests/test_run_status.py checks that this is the list of keys that _run_cfm sets.
@@ -241,8 +254,9 @@ class CFMRun:
             borehole_lon (float): Longitude of borehole location.
             physRho (str): Physical densification scheme to use in CFM model.
             rcm_name (Literal["MAR", "RACMO"]): RCM name to use for forcing data (e.g., MAR or RACMO).
-            liquid (LiquidScheme): meltwater scheme to use, one of LIQUID_SCHEMES ("bucket" or "darcy"). Stops with
-                ValueError for a different value
+            liquid (LiquidScheme): meltwater scheme to use, one of LIQUID_SCHEMES ("bucket", "darcy" or
+                "resingledomain"). Stops with ValueError for a different value. A resingledomain run gives the warnings
+                of RESINGLEDOMAIN_WARNING (FEAT-014)
             cfm_version (dict | None): CFM version from cfm_config.cfm_version(), default_cfm_version if None. This
                 process must be running that version's python.
             force (bool): rerun even if a complete run exists in the output folder.
@@ -287,6 +301,10 @@ class CFMRun:
             self._cfm_overrides_path = os.path.abspath(cfm_overrides)
             self._config_name = os.path.splitext(os.path.basename(cfm_overrides))[0]
 
+        self._warnings: list[str] = []  # the warnings of this run, also written to run.log
+        if liquid == "resingledomain":
+            self._warn_resingledomain()
+
         # set physRho and borehole loc from argument in case we've used command line to override config
         self._cfm_config["physRho"] = physRho
         self._force_data: pd.DataFrame = None
@@ -312,6 +330,17 @@ class CFMRun:
         self._points: dict = {}
         self._loadavg_start: list | None = None
         self._step_timing_stages: dict | None = None
+
+    def _warn_resingledomain(self) -> None:
+        """Warn that the resingledomain scheme (R1M) is in development, and, if cfm_config has *_darcy keys, that R1M
+        does not read them (FEAT-014). Warn only: the run goes on. The warnings are not in the manifest, which has
+        no field for them. run() copies them to run.log."""
+        self._warnings.append(RESINGLEDOMAIN_WARNING)
+        darcy_keys = sorted(key for key in self._cfm_config if key.endswith("_darcy"))
+        if darcy_keys:
+            self._warnings.append(RESINGLEDOMAIN_DARCY_KEYS_WARNING.format(keys=", ".join(darcy_keys)))
+        for message in self._warnings:
+            logging.warning(message)
 
     def run(self) -> None:
         """Run the CFM model with the specified configuration and forcing data, unless a complete run exists.
@@ -345,6 +374,11 @@ class CFMRun:
         log_handler = logging.FileHandler(os.path.join(results_folder, "run.log"))
         log_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
         logging.getLogger().addHandler(log_handler)
+        for message in self._warnings:  # the console has them from __init__, so write them to run.log only
+            record = logging.makeLogRecord(
+                {"name": "root", "levelname": "WARNING", "levelno": logging.WARNING, "msg": message}
+            )
+            log_handler.handle(record)
 
         self._manifest = self._new_manifest(self._cfm_identity, self._wrapper_identity)
         write_manifest(results_folder, self._manifest)

@@ -293,8 +293,63 @@ def test_bucket_and_darcy_are_different_runs(data_path):
 
 
 def test_other_liquid_scheme_is_refused(data_path):
-    with pytest.raises(ValueError, match="bucket, darcy"):
-        CFMRun(*SITE[:4], "resingledomain", VERSION)
+    with pytest.raises(ValueError, match="bucket, darcy, resingledomain"):
+        CFMRun(*SITE[:4], "prefsnowpack", VERSION)
+
+
+def resingledomain_warnings(caplog) -> list[str]:
+    return [record.getMessage() for record in caplog.records if "R1M" in record.getMessage()]
+
+
+def test_resingledomain_run_is_accepted_and_warns(data_path, cfm_calls, caplog):
+    """FEAT-014: a resingledomain run has the folder <physRho>_resingledomain_<start>-<end> and one warning."""
+    run = CFMRun(*SITE[:4], "resingledomain", VERSION)
+    folder_parts = os.path.relpath(run.prepare(), data_path).split(os.sep)
+    assert folder_parts[:4] == ["runs", "RACMO_261_126", "GSFC2020_resingledomain_1979-2024", "test"]
+    run.run()
+    assert len(cfm_calls) == 1
+    assert read_manifest(cfm_calls[0])["run"]["liquid"] == "resingledomain"
+    warnings = resingledomain_warnings(caplog)
+    assert warnings == [sim.run.RESINGLEDOMAIN_WARNING]
+    for text in ("in development in the CFM", "810 kg/m3", "re_snowpack.py", "modeltime 1981.89", "KB-38", "KB-36"):
+        assert text in warnings[0]
+    assert all(record.levelname == "WARNING" for record in caplog.records if "R1M" in record.getMessage())
+    log_text = Path(cfm_calls[0], "run.log").read_text()
+    assert f"WARNING root: {sim.run.RESINGLEDOMAIN_WARNING}" in log_text
+
+
+@pytest.mark.parametrize("liquid", ["bucket", "darcy"])
+def test_other_schemes_do_not_warn_about_resingledomain(data_path, caplog, liquid):
+    CFMRun(*SITE[:4], liquid, VERSION)
+    assert resingledomain_warnings(caplog) == []
+
+
+def test_darcy_keys_on_a_resingledomain_run_warn(data_path, tmp_path, cfm_calls, caplog):
+    """FEAT-014: *_darcy keys from --cfm-overrides give the second warning. The run is not stopped."""
+    path = overrides_file(tmp_path, "Ksat_darcy: power_law\ndtmin_darcy: 5\n")
+    run = CFMRun(*SITE[:4], "resingledomain", VERSION, cfm_overrides=path)
+    run.run()
+    assert len(cfm_calls) == 1
+    warnings = resingledomain_warnings(caplog)
+    assert warnings == [
+        sim.run.RESINGLEDOMAIN_WARNING,
+        sim.run.RESINGLEDOMAIN_DARCY_KEYS_WARNING.format(keys="Ksat_darcy, dtmin_darcy"),
+    ]
+    assert "do nothing" in warnings[1]
+
+
+def test_darcy_section_keys_on_a_resingledomain_run_warn(data_path, caplog):
+    """A *_darcy key in the resingledomain section gives the second warning; the darcy section is not applied."""
+    config["cfm_config_by_liquid"] = {"darcy": {"Ksat_darcy": "power_law"}, "resingledomain": {"krel_darcy": "x"}}
+    CFMRun(*SITE[:4], "resingledomain", VERSION)
+    assert len(resingledomain_warnings(caplog)) == 2
+    assert "krel_darcy" in resingledomain_warnings(caplog)[1]
+    assert "Ksat_darcy" not in resingledomain_warnings(caplog)[1]
+
+
+def test_resingledomain_run_without_darcy_keys_has_one_warning(data_path, caplog):
+    CFMRun(*SITE[:4], "resingledomain", VERSION)
+    assert len(resingledomain_warnings(caplog)) == 1
 
 
 @pytest.mark.parametrize(

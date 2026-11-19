@@ -235,7 +235,7 @@ cfm_config:
   timesetup: exact
   timesetup_options: [exact,interp,retmip]
   liquid: bucket
-  liquid_options: [bucket,darcy]   # the schemes that the wrapper runs (sim.manifest.LIQUID_SCHEMES)
+  liquid_options: [bucket,darcy,resingledomain]   # documentation only: the CFM and the wrapper do not read it. It is in the hash of every run, so do not edit it in an existing config.yaml (the schemes that the wrapper runs: sim.manifest.LIQUID_SCHEMES)
   # the options of one scheme only (such as the darcy options) go in cfm_config_by_liquid, below, not here. Each key
   # here goes in the hash of every run, so a key here changes the hash of the runs of every scheme
   merging: false

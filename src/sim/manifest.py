@@ -50,8 +50,10 @@ _HASHED_CFM_IDENTITY_KEYS = ("commit", "code_diff_sha256", "python_version", "pi
 HASH_LENGTH = 8
 
 # the values of cfm_config.liquid (the CFM meltwater scheme) that the wrapper runs. One scheme for each run. The darcy
-# options (Ksat_darcy, krel_darcy, ...) are cfm_config keys, so they are in the run hash but not in the run folder name
-LiquidScheme = Literal["bucket", "darcy"]
+# options (Ksat_darcy, krel_darcy, ...) are cfm_config keys, so they are in the run hash but not in the run folder name.
+# resingledomain (R1M) is in development in the CFM: CFMRun warns for each run of it (FEAT-014). This tuple is not a
+# hash input: the hash has the liquid value of the run, in cfm_config
+LiquidScheme = Literal["bucket", "darcy", "resingledomain"]
 LIQUID_SCHEMES: tuple[str, ...] = get_args(LiquidScheme)
 
 

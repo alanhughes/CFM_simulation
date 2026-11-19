@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # this script runs the run_cfm.py script for all combinations of site, physrho, and RCM values. LIQUID_VALUE is the
-# meltwater scheme: bucket or darcy (sim.manifest.LIQUID_SCHEMES).
+# meltwater scheme: bucket, darcy or resingledomain (sim.manifest.LIQUID_SCHEMES).
 
 # Site names in sites.yaml. The coordinates come from sites.yaml.
 # To use a batch of sites.yaml: mapfile -t SITES < <(python scripts/list_sites.py --batch batch_1)
