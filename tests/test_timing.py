@@ -18,7 +18,7 @@ import cfm_config
 import sim.run
 import sim.runs
 import sim.timing
-from cfm_config import ConfigError
+from cfm_config import ConfigError, config
 from sim.manifest import COMPLETE, FAILED, read_manifest, run_hash
 from sim.run import CFMRun
 from sim.timing import clock
@@ -357,10 +357,14 @@ def test_step_timing_is_refused_in_an_overrides_file(data_path):
 REFERENCE_HASH = "51a14e6aacff1ba30b41caf49d7f848d62f507841785bd3099193aefbd240571"
 
 
-def test_the_hash_of_fixed_inputs_is_the_hash_before_feat_013(data_path):
+def test_the_hash_of_fixed_inputs_is_the_hash_before_feat_013(data_path, monkeypatch):
     """Computed with the code of bc6e941 (before FEAT-013) for these inputs: the test config, SITE, VERSION,
     CFM_IDENTITY and the forcing CSV of data_path. Change this value only for a change that is meant to change
-    hashes."""
+    hashes.
+
+    liquid_options is a cfm_config key, so it is in the hash. config.example.yaml has [bucket,darcy,resingledomain]
+    since FEAT-014, so this test gives liquid_options its value at bc6e941."""
+    monkeypatch.setitem(config["cfm_config"], "liquid_options", ["bucket", "darcy"])
     run = new_run()
     run.prepare()
     assert run._run_hash == REFERENCE_HASH

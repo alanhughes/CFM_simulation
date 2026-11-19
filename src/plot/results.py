@@ -33,7 +33,7 @@ class ResultsPlotter:
             site (str): Site name in sites.yaml. The runs are those of its model point (FEAT-001, FEAT-002)
             phys_rho (List[str]): List of physical densification schemes to plot
             rcm_name (Literal["RACMO", "MAR"]): RCM name to use for forcing data (e.g., MAR or RACMO)
-            liquid (LiquidScheme): Meltwater scheme of the runs, "bucket" or "darcy"
+            liquid (LiquidScheme): Meltwater scheme of the runs, "bucket", "darcy" or "resingledomain"
             cfm (str | None): Label of the CFM version (default_cfm_version if None)
             start_year, end_year (int | None): the years of the runs, used as they are. None: the years of
                 force.years.run_years for rcm_name, as scripts/run_cfm.py uses (DISC-001)
